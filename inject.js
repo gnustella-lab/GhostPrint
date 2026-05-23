@@ -130,39 +130,64 @@
   }
 
   // ─── WEBGL FINGERPRINTING ────────────────────────────────────────────────
-  // Use SHORT generic GPU strings. Long platform-suffixed strings like
-  // "Mesa Intel(R) UHD Graphics 620 (KBL GT2)" matched only ~40k browsers
-  // in EFF's DB (15+ bits). Generic names without driver/codename suffixes
-  // match orders of magnitude more.
+  // Disable WEBGL_debug_renderer_info entirely — matches Firefox's
+  // privacy.resistFingerprinting=true behaviour and CanvasBlocker's
+  // {disabled} mode. Returning ANY spoofed string for UNMASKED_VENDOR /
+  // UNMASKED_RENDERER (even generic ones like "Intel(R) HD Graphics") was
+  // still 14+ bits in EFF's DB because the exact spoof string is itself
+  // distinctive. The Firefox RFP "extension doesn't exist" state is much
+  // more common (every privacy-conscious user shares it).
   //
-  // Includes "Mozilla/Mozilla" — the value Firefox returns when
-  // privacy.resistFingerprinting=true. Privacy-conscious users frequently
-  // expose this combo, so picking it blends our users with that pool.
+  // We also randomize a few non-string numeric WebGL params (the GPU
+  // capability values like MAX_TEXTURE_SIZE) so the WebGL hash keeps
+  // changing per session/origin — CanvasBlocker's technique.
 
-  const GL_PAIRS = [
-    { vendor: 'Mozilla',              renderer: 'Mozilla' },
-    { vendor: 'Mesa/X.org',           renderer: 'llvmpipe' },
-    { vendor: 'Intel Inc.',           renderer: 'Intel(R) HD Graphics' },
-    { vendor: 'NVIDIA Corporation',   renderer: 'NVIDIA GeForce GTX 1650' },
-    { vendor: 'AMD',                  renderer: 'AMD Radeon RX 580' },
-  ];
-
-  const glPair = GL_PAIRS[randInt(0, GL_PAIRS.length - 1)];
-  const spoofedVendor   = glPair.vendor;
-  const spoofedRenderer = glPair.renderer;
+  // Numeric WebGL parameters that leak hardware identity. Indexed by their
+  // GL enum value (the constant numeric pname). We perturb each by a small
+  // amount, deterministic per session+pname so a single page is consistent.
+  const WEBGL_PARAM_NOISE = {
+    3379:  () => -randInt(0, 1),            // MAX_TEXTURE_SIZE       (right-shift by 0 or 1)
+    34076: () => -randInt(0, 1),            // MAX_CUBE_MAP_TEXTURE_SIZE
+    34024: () => -randInt(0, 1),            // MAX_RENDERBUFFER_SIZE
+    33000: () => -randInt(0, 150),          // MAX_ELEMENTS_VERTICES
+    33001: () => -randInt(0, 150),          // MAX_ELEMENTS_INDICES
+  };
 
   function patchWebGLContext(ctx) {
     if (!ctx) return;
+
+    // (1) Hide WEBGL_debug_renderer_info from getExtension
+    const origGetExtension = ctx.getExtension.bind(ctx);
+    ctx.getExtension = function (name) {
+      if (name === 'WEBGL_debug_renderer_info') return null;
+      return origGetExtension(name);
+    };
+
+    // (2) Hide it from getSupportedExtensions so feature-detection also fails
+    const origGetSupportedExt = ctx.getSupportedExtensions.bind(ctx);
+    ctx.getSupportedExtensions = function () {
+      const exts = origGetSupportedExt();
+      return exts ? exts.filter((e) => e !== 'WEBGL_debug_renderer_info') : exts;
+    };
+
+    // (3) For sites that try the raw enum (0x9245 / 0x9246) without getting
+    // the extension first, return null too — matches Firefox RFP behaviour.
+    const UNMASKED_VENDOR   = 0x9245;
+    const UNMASKED_RENDERER = 0x9246;
+
     const origGetParam = ctx.getParameter.bind(ctx);
     ctx.getParameter = function (pname) {
-      const ext = ctx.getExtension('WEBGL_debug_renderer_info');
-      if (ext) {
-        if (pname === ext.UNMASKED_VENDOR_WEBGL)   return spoofedVendor;
-        if (pname === ext.UNMASKED_RENDERER_WEBGL) return spoofedRenderer;
+      if (pname === UNMASKED_VENDOR || pname === UNMASKED_RENDERER) return null;
+      // Perturb numeric capability values
+      const perturb = WEBGL_PARAM_NOISE[pname];
+      if (perturb) {
+        const real = origGetParam(pname);
+        if (typeof real === 'number') return real + perturb();
       }
       return origGetParam(pname);
     };
-    // Add noise to readPixels output
+
+    // (4) Add noise to readPixels output
     const origReadPixels = ctx.readPixels.bind(ctx);
     ctx.readPixels = function (x, y, w, h, format, type, pixels) {
       origReadPixels(x, y, w, h, format, type, pixels);
@@ -256,8 +281,10 @@
   defineGetter(Navigator.prototype, 'oscpu',      () => 'Linux x86_64');
   defineGetter(Navigator.prototype, 'buildID',    () => '20181001000000');
 
-  // hardwareConcurrency: 4 cores is the most common value globally
-  defineGetter(Navigator.prototype, 'hardwareConcurrency', () => 4);
+  // hardwareConcurrency: 2 — matches Firefox's privacy.resistFingerprinting
+  // default, so every privacy-hardened Firefox user reports the same value.
+  // Blending into that pool is better than picking the global mode (4).
+  defineGetter(Navigator.prototype, 'hardwareConcurrency', () => 2);
 
   // deviceMemory: 8 GB is the most common bucket
   if ('deviceMemory' in Navigator.prototype) {
