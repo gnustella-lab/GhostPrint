@@ -85,8 +85,14 @@
 
   // measureText: font detection scripts measure text rendered in candidate
   // fonts and compare widths against a fallback. Adding deterministic
-  // sub-pixel noise per (text, font, prop) prevents stable measurements
-  // without visible rendering changes.
+  // noise per (text, font, prop) is consistent within a page so layout
+  // doesn't break, but defeats the standard detection algorithm.
+  //
+  // Noise scales with sqrt(text length). Font fingerprinters use long
+  // strings ("mmmmmmmmwwwwwwww") to amplify per-glyph width differences;
+  // scaling the noise the same way means the noise dominates the genuine
+  // font-difference signal for long strings, while staying small enough
+  // (~0.1 px) for typical short labels to keep layout intact.
   function textNoise(text, propName, fontState) {
     let h = SEED;
     const stir = (s) => {
@@ -97,7 +103,9 @@
     stir(text);
     stir(propName);
     stir(fontState);
-    return ((h / 4294967296) - 0.5) * 0.005;  // ±0.0025 px
+    const base = ((h / 4294967296) - 0.5) * 0.5;          // ±0.25 px base
+    const scale = Math.sqrt(Math.max(1, text.length));    // 1 → 1, 16 → 4, 64 → 8
+    return base * scale;
   }
 
   const origMeasureText = CanvasRenderingContext2D.prototype.measureText;
@@ -281,10 +289,10 @@
   defineGetter(Navigator.prototype, 'oscpu',      () => 'Linux x86_64');
   defineGetter(Navigator.prototype, 'buildID',    () => '20181001000000');
 
-  // hardwareConcurrency: 2 — matches Firefox's privacy.resistFingerprinting
-  // default, so every privacy-hardened Firefox user reports the same value.
-  // Blending into that pool is better than picking the global mode (4).
-  defineGetter(Navigator.prototype, 'hardwareConcurrency', () => 2);
+  // hardwareConcurrency: 4 cores is the global mode in EFF's dataset.
+  // (Tried 2 to match Firefox RFP, but it's actually RARER than 4 in their
+  // database — went from 2.10 bits → 4.26 bits. The RFP pool is small.)
+  defineGetter(Navigator.prototype, 'hardwareConcurrency', () => 4);
 
   // deviceMemory: 8 GB is the most common bucket
   if ('deviceMemory' in Navigator.prototype) {
