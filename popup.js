@@ -34,7 +34,9 @@ async function renderSeed() {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const tab = tabs && tabs[0];
     if (!tab || tab.id === undefined) throw new Error('no active tab');
-    const seed = await browser.tabs.sendMessage(tab.id, { type: 'GET_SEED' });
+    // Target the top frame explicitly instead of relying on every frame's
+    // listener gating on sender.frameId — more robust across engine forks.
+    const seed = await browser.tabs.sendMessage(tab.id, { type: 'GET_SEED' }, { frameId: 0 });
     el.textContent = (seed === undefined || seed === null)
       ? '—'
       : '0x' + (seed >>> 0).toString(16).toUpperCase().padStart(8, '0');

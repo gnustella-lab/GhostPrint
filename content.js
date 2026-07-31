@@ -80,10 +80,12 @@ try {
 }
 
 // ─── SEED QUERY FOR THE POPUP ─────────────────────────────────────────────
-// The popup shows the real per-origin seed of the active tab. Only the top
-// frame responds (frameId === 0); subframes have their own origin's seed.
-browser.runtime.onMessage.addListener((message, sender) => {
-  if (message && message.type === 'GET_SEED' && sender.frameId === 0) {
+// The popup shows the real per-origin seed of the active tab. The popup
+// targets the top frame explicitly (tabs.sendMessage options.frameId: 0),
+// so the listener here does not need to gate on sender.frameId; it answers
+// any GET_SEED that reaches it.
+browser.runtime.onMessage.addListener((message) => {
+  if (message && message.type === 'GET_SEED') {
     return Promise.resolve(seed);
   }
 });
