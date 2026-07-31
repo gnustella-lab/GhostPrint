@@ -66,12 +66,26 @@ function renderFields(enabled) {
   for (const f of EFF_FIELDS) {
     const row = document.createElement('div');
     row.className = 'protection-row ' + (enabled ? 'on' : 'off');
-    row.innerHTML =
-      '<div class="protection-left">' +
-      '<span class="protection-icon">' + f.icon + '</span>' +
-      '<span class="protection-name">' + f.label + '</span>' +
-      '</div>' +
-      '<div class="protection-dot"></div>';
+
+    const left = document.createElement('div');
+    left.className = 'protection-left';
+
+    const icon = document.createElement('span');
+    icon.className = 'protection-icon';
+    icon.textContent = f.icon;
+
+    const name = document.createElement('span');
+    name.className = 'protection-name';
+    name.textContent = f.label;
+
+    left.appendChild(icon);
+    left.appendChild(name);
+
+    const dot = document.createElement('div');
+    dot.className = 'protection-dot';
+
+    row.appendChild(left);
+    row.appendChild(dot);
     list.appendChild(row);
   }
 }
