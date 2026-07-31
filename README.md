@@ -20,6 +20,7 @@ GhostPrint injects anti-fingerprinting hooks into every web page to make your br
 
 - **Per-session, per-origin seed**: Each tab session and each website gets its own random seed. The same site in the same tab always sees the same fingerprint (so pages don't break), but a different site or a new tab sees a completely different one.
 - **Deterministic farbling**: All noise is a pure function of the seed, pixel position, and source values. This guarantees that repeated fingerprint probes on the same page return identical results, which is required to pass EFF's Cover Your Tracks cross-domain check.
+- **Canvas reads are imperceptibly altered**: `getImageData`, `toDataURL`, and `toBlob` return real pixels with ~1 in 32 of them nudged by ±1 per RGB channel (alpha untouched). This shifts the fingerprint hash but is visually undetectable; note that exported images (PNG/JPEG/WebP, QR codes, screenshots saved via `toDataURL`) differ slightly from the original bytes.
 - **Fail-safe defaults**: If storage is unavailable, protection stays ON rather than silently disabling.
 
 ## Files
@@ -27,8 +28,9 @@ GhostPrint injects anti-fingerprinting hooks into every web page to make your br
 | File | Role |
 |------|------|
 | `manifest.json` | Extension manifest (MV2) |
+| `settings.js` | Shared default settings, loaded by background, content scripts, and popup |
 | `background.js` | Maintains on/off setting in `browser.storage.local` |
-| `content.js` | Content script that runs at `document_start`; decides whether to inject and passes the per-origin seed |
+| `content.js` | Content script that runs at `document_start`; stores the per-origin seed in `sessionStorage` and injects `inject.js` via a web-accessible `<script src>` (CSP-safe) |
 | `inject.js` | Injected into page context; overrides `Canvas`, `WebGL`, `Audio`, `navigator.plugins`, and `navigator.hardwareConcurrency` |
 | `popup.html` / `popup.js` / `popup.css` | Extension popup UI with toggle, status, and protection list |
 | `icons/ghost.svg` | Extension icon |

@@ -5,26 +5,54 @@
 // requires ≥ 4 of these five fields to differ between first-party domains:
 //   audio, canvas_hash_v2, webgl_hash_v2, plugins, hardware_concurrency
 //
-// CRITICAL: EFF runs each fingerprint TWICE per page. If our farbling depends
-// on the source pixel values, and the browser's text/canvas rendering produces
-// slight sub-pixel variations between two newly-drawn canvases (which it can),
-// our output differs between the two runs → EFF marks it "randomized"
-// *within page* → both first-party domains report the same "randomized"
-// string → cross-domain check sees no difference → no credit.
+// Design: Brave-style farbling. Every read of canvas pixels returns the real
+// pixels perturbed by tiny, seed-determined noise (~1 in 32 pixels, ±1 per
+// RGB channel, alpha untouched). The perturbation is a pure function of
+// (seed, pixel position, source pixel values), so a canvas that is drawn
+// identically twice produces byte-identical farbled output. EFF draws the
+// same probe canvas on both of its runs within a page, so the hash is
+// stable within the page; a different first-party origin has a different
+// seed, so the hash differs across origins — which is what EFF rewards.
 //
-// The fix: replace canvas read APIs with content that is a pure function of
-// (canvas dimensions, pixel position, seed) — completely IGNORING the actual
-// canvas pixels. Within a page: same dims + same seed = identical output on
-// both Fingerprint2 runs. Across origins: different seed = different output.
+// Known caveat (documented, not silently ignored): because the source pixel
+// values feed into the hash, if the browser renders the same canvas
+// slightly differently between two draws (sub-pixel text/gradient
+// variation), the farbled output could differ between EFF's two runs and
+// the field would be flagged "randomized" within the page, losing
+// cross-domain credit. In practice canvas rendering is deterministic for
+// identical draw calls, so this is theoretical; if EFF ever stops passing,
+// drop the source pixels from the hash (pure function of seed + position +
+// dimensions).
+//
 // Audio's OfflineAudioContext rendering is mathematically deterministic, so
-// keeping a per-channel cache of farbled samples works there.
+// value-dependent noise is safe there; a per-channel cache keeps repeated
+// reads identical.
+//
+// The seed comes from sessionStorage, written by content.js under
+// STORAGE_KEY (this is the same store the page context sees). The value is
+// validated; anything unparseable falls back to a per-page random seed so
+// pages cannot collapse all origins to seed 0.
 
 (function () {
   'use strict';
 
-  const cfg = window.__ghostprint__;
-  if (!cfg || !cfg.enabled) return;
-  const SEED = cfg.seed >>> 0;
+  const STORAGE_KEY = '__ghostprint_seed_v1__'; // must match content.js
+
+  let SEED;
+  try {
+    const stored = sessionStorage.getItem(STORAGE_KEY);
+    const parsed = parseInt(stored, 10);
+    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 0xFFFFFFFF) {
+      SEED = parsed >>> 0;
+    } else {
+      SEED = ((Math.random() * 0xFFFFFFFE) + 1) >>> 0;
+      // Write back so content.js (popup display) and inject.js agree on the
+      // seed even if a page tampered with the key between the two loads.
+      try { sessionStorage.setItem(STORAGE_KEY, String(SEED)); } catch (e) {}
+    }
+  } catch (e) {
+    SEED = ((Math.random() * 0xFFFFFFFE) + 1) >>> 0;
+  }
 
   // ─── Deterministic 32-bit hash mixer ─────────────────────────────────────
   // Stateless. Same args + same SEED → same output, always.
@@ -47,7 +75,9 @@
   // Farble canvas reads the way Brave does: apply tiny, IMPERCEPTIBLE, seed-
   // determined noise to the *real* pixels instead of replacing them. This is
   // both correct for EFF and non-destructive for legitimate canvas use
-  // (image editors, croppers, format converters, QR/chart exporters, etc.).
+  // (image editors, croppers, format converters, QR/chart exporters, etc.) —
+  // with the caveat that exported bytes (toDataURL/toBlob) are imperceptibly
+  // altered, see the README.
   //
   // Determinism is what makes this safe for EFF's twice-per-page probe: the
   // perturbation is a pure function of (seed, pixel position, source pixel
@@ -85,14 +115,52 @@
   // return that canvas so the original is never mutated. Returns null if the
   // source can't be snapshotted (e.g. tainted/cross-origin) so callers fall
   // back to the unmodified original.
-  function farbledCopy(src) {
+  //
+  // A single reusable scratch canvas avoids allocating a full w*h*4 buffer
+  // on every export call; it is only resized when the source size changes
+  // (resizing clears it, and we always redraw + re-read the full source
+  // area, so stale content outside it is never encoded). The scratch is
+  // created via the captured original createElement/getContext, so it is
+  // invisible to our own overrides and never exposed to the page.
+  //
+  // IMPORTANT: the scratch may ONLY be used for synchronous paths (toDataURL
+  // encodes synchronously and returns before any other code can run). The
+  // toBlob path encodes "in parallel" per spec and reads the canvas bitmap
+  // at encode time, not at call time: a second farbledCopy before the first
+  // encode reads the bitmap would overwrite the shared scratch and the
+  // earlier blob would be encoded from the later canvas's pixels. toBlob
+  // therefore always allocates a fresh canvas per call (BUG-0013).
+  let scratchCanvas = null;
+  let scratchCtx = null;
+
+  function farbledCopy(src, reuseScratch) {
     const w = src.width, h = src.height;
     if (w <= 0 || h <= 0) return null;
     try {
-      const tmp = origCreateElement.call(document, 'canvas');
-      tmp.width = w;
-      tmp.height = h;
-      const tctx = origGetContext.call(tmp, '2d');
+      let tmp, tctx;
+      if (reuseScratch) {
+        if (scratchCanvas && !scratchCtx) {
+          // Previous init failed partway (e.g. getContext returned null):
+          // reset so we retry instead of failing permanently.
+          scratchCanvas = null;
+        }
+        if (!scratchCanvas) {
+          scratchCanvas = origCreateElement.call(document, 'canvas');
+          scratchCtx = origGetContext.call(scratchCanvas, '2d');
+        }
+        if (scratchCanvas.width !== w || scratchCanvas.height !== h) {
+          scratchCanvas.width = w;
+          scratchCanvas.height = h;
+        }
+        tmp = scratchCanvas;
+        tctx = scratchCtx;
+      } else {
+        tmp = origCreateElement.call(document, 'canvas');
+        tmp.width = w;
+        tmp.height = h;
+        tctx = origGetContext.call(tmp, '2d');
+      }
+      if (!tctx) return null;
       tctx.drawImage(src, 0, 0);
       const id = origGetImageData.call(tctx, 0, 0, w, h);
       farblePixels(id.data, w, h);
@@ -110,13 +178,15 @@
   };
 
   HTMLCanvasElement.prototype.toDataURL = function (type, quality) {
-    const copy = farbledCopy(this);
+    const copy = farbledCopy(this, true); // synchronous encode: scratch reuse is safe
     if (copy) return origToDataURL.call(copy, type, quality);
     return origToDataURL.call(this, type, quality);
   };
 
   HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
-    const copy = farbledCopy(this);
+    // Fresh canvas per call: the encode runs asynchronously and reads the
+    // bitmap at encode time, so a shared scratch would race (BUG-0013).
+    const copy = farbledCopy(this, false);
     if (copy) return origToBlob.call(copy, callback, type, quality);
     return origToBlob.call(this, callback, type, quality);
   };
@@ -125,16 +195,21 @@
   // Fingerprint2 reads the rendered WebGL canvas via `gl.canvas.toDataURL()`
   // — the canvas override above handles that. We also farble readPixels for
   // fingerprinters that use it directly.
+  //
+  // Only RGBA + UNSIGNED_BYTE buffers are perturbed: that is the byte layout
+  // (4 bytes/pixel) the nudge loop assumes. Other format/type combos (e.g.
+  // RGB with 3 bytes/pixel, or float buffers) are left untouched so a ±1
+  // nudge can't misalign and corrupt legitimate reads.
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
     const ctx = origGetContext.call(this, type, attrs);
     if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
       const origReadPixels = ctx.readPixels.bind(ctx);
       ctx.readPixels = function (x, y, w, h, format, t, pixels) {
         origReadPixels(x, y, w, h, format, t, pixels);
-        // Only perturb 8-bit pixel buffers (the usual fingerprinting case);
-        // leave float/other formats untouched so a ±1 nudge can't corrupt
-        // legitimate reads. Same imperceptible, deterministic noise as 2D.
-        if (pixels && pixels.length &&
+        // WebGL contexts always define these constants (spec); no fallbacks needed.
+        const isRGBA = format === ctx.RGBA;
+        const isUint8 = t === ctx.UNSIGNED_BYTE;
+        if (pixels && isRGBA && isUint8 &&
             (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray)) {
           for (let i = 0; i + 3 < pixels.length; i += 4) {
             const hash = mix(i, w, h, pixels[i], pixels[i + 1], pixels[i + 2]);
@@ -217,6 +292,15 @@
   // property there and prototype-level overrides get shadowed.
   defineGetter(navigator, 'hardwareConcurrency', () => spoofedHC);
 
+  // ─── PDF VIEWER FLAG ─────────────────────────────────────────────────────
+  // Modern fingerprinters read navigator.pdfViewerEnabled (replaces the old
+  // plugins/mimeTypes checks). Farble it per-origin like the other vectors;
+  // sites may use it to decide PDF affordances, so the value only changes
+  // between origins, never within a page.
+  const spoofedPdf = (mix(0x0F1E0E) & 1) === 1;
+  defineGetter(Navigator.prototype, 'pdfViewerEnabled', () => spoofedPdf);
+  defineGetter(navigator, 'pdfViewerEnabled', () => spoofedPdf);
+
   // ─── PLUGINS ─────────────────────────────────────────────────────────────
   // Append seed-determined fake plugins so the list differs per origin.
   // EFF iterates navigator.plugins → name/description/filename, sorts the
@@ -235,43 +319,45 @@
       const pdfMime    = fakeMime('application/pdf', 'Portable Document Format', 'pdf');
       const textPdfMime = fakeMime('text/pdf',       'Portable Document Format', 'pdf');
 
+      // Diversified pool: not every fake is a PDF viewer, so the per-origin
+      // variation doesn't just shuffle PDF names. Each entry carries its own
+      // description/filename/mime set so name and content stay consistent.
       const FAKE_POOL = [
-        'WebKit built-in PDF',
-        'PDF.js',
-        'Foxit PDF Viewer',
-        'Native Client',
-        'Brave PDF Viewer',
-        'Edge PDF Viewer',
-        'Safari PDF Reader',
-        'Sumatra PDF',
+        { name: 'WebKit built-in PDF',     description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'PDF.js',                  description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'Foxit PDF Viewer',        description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'Brave PDF Viewer',        description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'Edge PDF Viewer',         description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'Safari PDF Reader',       description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'Sumatra PDF',             description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
+        { name: 'OpenH264 Video Decoder',  description: 'OpenH264 video codec for Firefox',  filename: 'libgmpopenh264',      mimes: [fakeMime('video/h264', 'H.264 video codec', 'mp4')] },
+        { name: 'Widevine CDM',            description: 'Playback of DRM-protected content', filename: 'libwidevinecdm',      mimes: [fakeMime('application/x-ppapi-widevine-cdm', 'Widevine DRM', '')] },
       ];
 
-      function makeFakePlugin(name) {
+      function makeFakePlugin(entry) {
+        const mimes = entry.mimes.map((m) => ({ ...m, enabledPlugin: null }));
         const p = {
-          name,
-          description: 'Portable Document Format',
-          filename: 'internal-pdf-viewer',
-          length: 2,
-          0: pdfMime,
-          1: textPdfMime,
+          name: entry.name,
+          description: entry.description,
+          filename: entry.filename,
+          length: mimes.length,
           item: function (i) { return this[i] || null; },
-          namedItem: function (n) {
-            if (n === 'application/pdf') return pdfMime;
-            if (n === 'text/pdf') return textPdfMime;
-            return null;
-          },
+          namedItem: function (n) { return mimes.find((m) => m.type === n) || null; },
         };
+        for (let i = 0; i < mimes.length; i++) p[i] = mimes[i];
         return p;
       }
 
       // Always 1-4 extras (never 0) so plugin list always differs from the
-      // baseline 5-PDF-viewer Firefox set.
+      // baseline set; dedupe the picks so a seed can't produce two copies
+      // of the same fake plugin.
       const extraCount = (mix(0xBADC0DE) % 4) + 1;
-      const fakes = [];
-      for (let i = 0; i < extraCount; i++) {
-        const idx = mix(0xF00BAA, i) % FAKE_POOL.length;
-        fakes.push(makeFakePlugin(FAKE_POOL[idx]));
+      const chosen = new Set();
+      for (let k = 0; chosen.size < extraCount && k < 32; k++) {
+        chosen.add(mix(0xF00BAA, k) % FAKE_POOL.length);
       }
+      const fakes = [];
+      for (const idx of chosen) fakes.push(makeFakePlugin(FAKE_POOL[idx]));
 
       const totalLen = realPlugins.length + fakes.length;
 
@@ -307,6 +393,4 @@
       defineGetter(Navigator.prototype, 'plugins', () => proxyPlugins);
     }
   } catch (_) {}
-
-  try { delete window.__ghostprint__; } catch (_) {}
 })();

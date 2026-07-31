@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_SETTINGS = { enabled: true };
+// DEFAULT_SETTINGS comes from settings.js (loaded first in popup.html).
 
 // The five fields EFF's Cover Your Tracks checks for cross-domain
 // randomization. If ≥ 4 of these differ between first-party domains,
@@ -28,10 +28,21 @@ async function saveSettings(s) {
   await browser.storage.local.set({ settings: s });
 }
 
-function renderSeed() {
+async function renderSeed() {
   const el = document.getElementById('sessionSeed');
-  const ts = Date.now();
-  el.textContent = '0x' + ((ts ^ (ts >>> 16)) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  try {
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs && tabs[0];
+    if (!tab || tab.id === undefined) throw new Error('no active tab');
+    const seed = await browser.tabs.sendMessage(tab.id, { type: 'GET_SEED' });
+    el.textContent = (seed === undefined || seed === null)
+      ? '—'
+      : '0x' + (seed >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  } catch (_) {
+    // No content script on this page (e.g. about:addons, chrome://) or
+    // message failed — nothing meaningful to display.
+    el.textContent = '—';
+  }
 }
 
 function renderStatus(enabled) {

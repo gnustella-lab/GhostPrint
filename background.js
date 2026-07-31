@@ -1,9 +1,8 @@
 'use strict';
 
 // GhostPrint background: just maintains the on/off setting. All real work
-// happens in the content/inject scripts.
-
-const DEFAULT_SETTINGS = { enabled: true };
+// happens in the content/inject scripts. DEFAULT_SETTINGS comes from
+// settings.js (loaded first, see manifest background.scripts).
 
 async function ensureSettings() {
   const result = await browser.storage.local.get('settings');
