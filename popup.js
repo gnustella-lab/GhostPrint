@@ -38,10 +38,13 @@ async function renderSeed() {
     el.textContent = (seed === undefined || seed === null)
       ? '—'
       : '0x' + (seed >>> 0).toString(16).toUpperCase().padStart(8, '0');
-  } catch (_) {
-    // No content script on this page (e.g. about:addons, chrome://) or
-    // message failed — nothing meaningful to display.
-    el.textContent = '—';
+  } catch (err) {
+    // No content script on this page (about:, chrome://, or the page was
+    // opened before the extension was loaded) or the message failed.
+    // Log the real error so the popup console (right-click → Inspect) shows
+    // what happened instead of a silent "—".
+    console.error('GhostPrint: could not read seed of active tab:', err);
+    el.textContent = '— reload the page';
   }
 }
 
