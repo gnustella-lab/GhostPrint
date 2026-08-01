@@ -1,0 +1,6 @@
+# Build artifacts
+*.zip
+
+# Bug-hunt tracking artifacts (local session state, not part of the extension)
+bugs-observed.json
+bugs-summary.md
