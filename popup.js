@@ -1,11 +1,11 @@
 'use strict';
 
 const EFF_FIELDS = [
-  { icon: '🔊', label: 'Áudio' },
-  { icon: '🖼️', label: 'Hash do Canvas' },
-  { icon: '🎮', label: 'Hash do WebGL' },
-  { icon: '🧩', label: 'Plugins / tipos MIME' },
-  { icon: '⚙️', label: 'Concorrência de hardware' },
+  { icon: '🔊', label: 'Audio' },
+  { icon: '🖼️', label: 'Canvas hash' },
+  { icon: '🎮', label: 'WebGL hash' },
+  { icon: '🧩', label: 'Plugins / MIME types' },
+  { icon: '⚙️', label: 'Hardware concurrency' },
 ];
 
 let currentSettings = cloneDefaultSettings();
@@ -40,11 +40,11 @@ async function renderSeed() {
     if (!tab || tab.id === undefined) throw new Error('no active tab');
     const seed = await browser.tabs.sendMessage(tab.id, { type: 'GET_SEED' }, { frameId: 0 });
     el.textContent = (seed === undefined || seed === null)
-      ? '— indisponível'
+      ? '— unavailable'
       : '0x' + (seed >>> 0).toString(16).toUpperCase().padStart(8, '0');
   } catch (err) {
     console.error('GhostPrint: could not read seed of active tab:', err);
-    el.textContent = '— recarregue a página';
+    el.textContent = '— reload the page';
   }
 }
 
@@ -54,7 +54,7 @@ function renderStatus(enabled) {
   const text = document.getElementById('statusText');
   banner.className = enabled ? 'status-banner active' : 'status-banner inactive';
   icon.textContent = enabled ? '🛡️' : '⚠️';
-  text.textContent = enabled ? 'Randomizando, recarregue as páginas' : 'Desativado, recarregue as páginas';
+  text.textContent = enabled ? 'Randomizing, reload pages' : 'Disabled, reload pages';
 }
 
 function renderError(message) {
@@ -113,7 +113,7 @@ function bindControls() {
     } catch (err) {
       console.error('GhostPrint: could not save settings:', err);
       toggle.checked = currentSettings.enabled;
-      renderError('Não foi possível salvar a configuração');
+      renderError('Could not save settings');
     } finally {
       toggle.disabled = false;
     }
@@ -128,7 +128,7 @@ function bindControls() {
       renderFields(currentSettings.enabled);
     } catch (err) {
       console.error('GhostPrint: could not reset settings:', err);
-      renderError('Não foi possível restaurar os padrões');
+      renderError('Could not restore defaults');
     } finally {
       resetButton.disabled = false;
     }
@@ -142,7 +142,7 @@ async function init() {
   } catch (err) {
     console.error('GhostPrint: could not load settings:', err);
     currentSettings = cloneDefaultSettings();
-    renderError('Não foi possível carregar a configuração');
+    renderError('Could not load settings');
   }
 
   toggle.checked = currentSettings.enabled;
@@ -157,6 +157,6 @@ async function init() {
 document.addEventListener('DOMContentLoaded', () => {
   void init().catch((err) => {
     console.error('GhostPrint: popup initialization failed:', err);
-    renderError('Falha ao inicializar o popup');
+    renderError('Popup initialization failed');
   });
 });

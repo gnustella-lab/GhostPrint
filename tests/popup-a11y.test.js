@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.resolve(__dirname, '..', 'popup.html'), 'utf8'
 const css = fs.readFileSync(path.resolve(__dirname, '..', 'popup.css'), 'utf8');
 
 test('popup exposes accessible language, toggle name and status announcements', () => {
-  assert.match(html, /<html lang="pt-BR">/);
+  assert.match(html, /<html lang="en">/);
   assert.match(html, /id="globalToggle"[^>]*aria-label="[^"]+"/);
   assert.match(html, /id="statusBanner"[^>]*role="status"/);
   assert.match(html, /id="statusBanner"[^>]*aria-live="polite"/);

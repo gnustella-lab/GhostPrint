@@ -1,78 +1,78 @@
 # GhostPrint
 
-GhostPrint é uma extensão Firefox Manifest V2 que aplica farbling determinístico a algumas APIs usadas em fingerprinting. Ela tenta reduzir a estabilidade do fingerprint entre origens sem alterar toda chamada nativa ou fingir equivalência com Brave, Tor Browser ou Firefox Resist Fingerprinting.
+GhostPrint is a Firefox Manifest V2 extension that applies deterministic farbling to selected fingerprinting APIs. It aims to reduce fingerprint stability across origins without altering every native call or pretending to be equivalent to Brave, Tor Browser, or Firefox Resist Fingerprinting.
 
-A extensão não coleta, não transmite e não envia dados para servidores externos. O seed é gerado localmente com `crypto.getRandomValues` e usado apenas para produzir valores determinísticos no contexto da página.
+The extension does not collect, transmit, or send data to external servers. The seed is generated locally with `crypto.getRandomValues` and used only to produce deterministic values in the page context.
 
-## Escopo atual
+## Current scope
 
-As superfícies implementadas são:
+The implemented surfaces are:
 
-| Superfície | Comportamento |
+| Surface | Behavior |
 | --- | --- |
-| Canvas 2D | Altera uma parte esparsa dos canais RGB em leituras de `getImageData`, `toDataURL` e `toBlob`. O alpha permanece intacto. |
-| WebGL | Altera somente leituras `RGBA` com `UNSIGNED_BYTE` em typed arrays. Respeita a faixa efetivamente escrita e o `dstOffset` de WebGL 2. O overload numérico de PBO não é tratado como array. Oculta `WEBGL_debug_renderer_info` e os enums de vendor/renderer não mascarados. |
-| Web Audio | Farbling determinístico em leituras de `AudioBuffer` e `AnalyserNode`, incluindo canais de frequência e domínio temporal quando as APIs existem. |
-| Navigator | Farbling determinístico de `hardwareConcurrency`. |
-| Plugins e MIME types | Mantém as entradas nativas e acrescenta um perfil PDF determinístico com objetos relacionados entre `navigator.plugins` e `navigator.mimeTypes`. |
+| Canvas 2D | Changes a sparse subset of RGB channels in `getImageData`, `toDataURL`, and `toBlob` reads. Alpha remains intact. |
+| WebGL | Changes only `RGBA` reads with `UNSIGNED_BYTE` typed arrays. It respects the actual write range and the WebGL 2 `dstOffset`. The numeric PBO overload is not treated as an array. It hides `WEBGL_debug_renderer_info` and leaves the vendor/renderer enums unmasked. |
+| Web Audio | Applies deterministic farbling to `AudioBuffer` and `AnalyserNode` reads, including frequency and time-domain channels when those APIs exist. |
+| Navigator | Applies deterministic farbling to `hardwareConcurrency`. |
+| Plugins and MIME types | Preserves native entries and adds a deterministic PDF profile with related objects across `navigator.plugins` and `navigator.mimeTypes`. |
 
-O código usa feature detection. A ausência de uma API específica não deve impedir as outras instalações disponíveis.
+The code uses feature detection. The absence of one specific API should not prevent other available installers from running.
 
-## Como funciona o seed
+## How the seed works
 
-O seed é um inteiro decimal validado e persistido pelo background da extensão. Antes de carregar `inject.js`, o content script transporta o valor validado no fragmento da URL do recurso externo. O realm da página usa somente esse valor carregado, sem ler ou gravar `sessionStorage`, evitando uma troca de seed entre a consulta do content script e o início dos hooks.
+The seed is a validated decimal integer persisted by the extension's background page. Before loading `inject.js`, the content script carries the validated value in the URL fragment of the external resource. The page realm uses only that loaded value, without reading or writing `sessionStorage`, avoiding a seed swap between the content-script query and hook startup.
 
-A geração ocorre antes da injeção quando o background consegue obter e verificar um seed criptográfico. Se storage ou crypto falharem, a extensão falha de forma explícita e evita uma injeção parcial. Quando a proteção está desativada, nenhum seed novo é criado.
+Generation occurs before injection when the background page can obtain and verify a cryptographic seed. If storage or crypto fails, the extension fails explicitly and avoids partial injection. When protection is disabled, no new seed is created.
 
-O seed e o fragmento da URL não são segredos. A própria página pode observar o fragmento e a existência do elemento de script, além de tentar interferir no DOM. Portanto, o seed é uma âncora de determinismo, não uma fronteira de segurança. Alterações posteriores em qualquer storage da página não mudam a seed já carregada pelos hooks.
+The seed and URL fragment are not secrets. The page can observe the fragment and the script element, and can also try to interfere with the DOM. Therefore, the seed is a determinism anchor, not a security boundary. Later changes to any page storage do not change the seed already loaded by the hooks.
 
-## Limitações arquiteturais importantes
+## Important architectural limitations
 
-### Janela de exposição do Manifest V2
+### Manifest V2 exposure window
 
-O content script é solicitado em `document_start`, mas a consulta a `browser.storage.local` e a geração/verificação do seed são assíncronas. Scripts inline muito precoces podem executar antes de `inject.js`. A extensão não consegue eliminar essa janela usando apenas Manifest V2 e storage assíncrono.
+The content script is requested at `document_start`, but the `browser.storage.local` query and seed generation/verification are asynchronous. Very early inline scripts may execute before `inject.js`. The extension cannot eliminate this window using Manifest V2 and asynchronous storage alone.
 
-### Frames e documentos especiais
+### Frames and special documents
 
-O manifesto usa `all_frames`, `match_about_blank` e `match_origin_as_fallback` para ampliar a cobertura de frames HTTP e HTTPS, `about:blank`, `about:srcdoc`, `data:` e `blob:` quando a origem corresponde. No Firefox, iframes vazios podem não receber content scripts em `document_start`, mesmo com `match_about_blank`.
+The manifest uses `all_frames`, `match_about_blank`, and `match_origin_as_fallback` to expand coverage to matching HTTP and HTTPS frames, `about:blank`, `about:srcdoc`, `data:`, and `blob:` documents. In Firefox, empty iframes may not receive content scripts at `document_start`, even with `match_about_blank`.
 
-Frames cujo URL não corresponde, páginas privilegiadas do navegador, páginas de extensão, alguns documentos com origem opaca e documentos carregados antes da instalação podem permanecer sem proteção.
+Frames whose URLs do not match, privileged browser pages, extension pages, some opaque-origin documents, and documents loaded before installation may remain unprotected.
 
-### Workers e worklets
+### Workers and worklets
 
-`Worker`, `SharedWorker`, `ServiceWorker`, `AudioWorklet`, `PaintWorklet`, `OffscreenCanvas` e outros realms independentes não são protegidos por `inject.js`. Uma aplicação que calcula o fingerprint nesses realms pode ignorar os hooks da página principal.
+`Worker`, `SharedWorker`, `ServiceWorker`, `AudioWorklet`, `PaintWorklet`, `OffscreenCanvas`, and other independent realms are not protected by `inject.js`. An application that computes its fingerprint in those realms can bypass the hooks in the main page.
 
-### Detectabilidade e compatibilidade
+### Detectability and compatibility
 
-A página pode detectar alterações observando descritores, protótipos, `toString`, identidades de objetos, erros, timing, sobrecargas não cobertas e diferenças entre realms. Objetos sintéticos de Plugins/MIME types são construídos para manter referências coerentes, mas não possuem os internal slots nativos do navegador e podem ser detectáveis ou incompatíveis com código que dependa de detalhes não padronizados.
+A page can detect changes by inspecting descriptors, prototypes, `toString`, object identities, errors, timing, uncovered overloads, and differences between realms. Synthetic Plugin/MIME type objects are built to preserve coherent references, but they do not have the browser's native internal slots and may be detectable or incompatible with code that relies on non-standard details.
 
-O spoofing de `navigator.pdfViewerEnabled` não é feito. Essa propriedade pode refletir a disponibilidade real do visualizador, evitando contradizer o suporte a PDF e quebrar visualizadores.
+`navigator.pdfViewerEnabled` is not spoofed. The property may reflect the real viewer availability, avoiding contradictions with PDF support and preventing viewer breakage.
 
 ### Firefox Android
 
-O manifesto declara Firefox mínimo 140. A configuração não foi validada em um dispositivo Android real nesta versão do projeto. Considere o suporte Android experimental até que a extensão seja exercitada em Firefox Android.
+The manifest declares Firefox 140 as the minimum version. This configuration has not been validated on a real Android device in this project version. Treat Android support as experimental until the extension has been exercised in Firefox for Android.
 
-## O que a extensão não promete
+## What the extension does not promise
 
-- Não é equivalente ao Brave, Tor Browser ou Firefox Resist Fingerprinting.
-- Não garante anonimato nem impede correlação por IP, cookies, login, armazenamento, fontes, tela, rede ou comportamento.
-- Não protege todos os realms, workers, worklets, iframes ou APIs de fingerprinting.
-- Não garante que todas as páginas continuem compatíveis com os objetos sintéticos de Plugins/MIME types.
-- Não garante aprovação permanente em Cover Your Tracks. O resultado desse teste é apenas uma evidência sobre algumas superfícies em uma configuração específica.
+- It is not equivalent to Brave, Tor Browser, or Firefox Resist Fingerprinting.
+- It does not guarantee anonymity or prevent correlation through IP address, cookies, login, storage, fonts, screen, network, or behavior.
+- It does not protect every realm, worker, worklet, iframe, or fingerprinting API.
+- It does not guarantee that every page will remain compatible with the synthetic Plugin/MIME type objects.
+- It does not guarantee permanent approval in Cover Your Tracks. That result is only evidence about some surfaces in one specific configuration.
 
-## Instalação para desenvolvimento
+## Development installation
 
-1. Abra `about:debugging` no Firefox.
-2. Selecione **Este Firefox**.
-3. Clique em **Carregar extensão temporária**.
-4. Selecione o arquivo `manifest.json` deste diretório.
-5. Recarregue as páginas que já estavam abertas.
+1. Open `about:debugging` in Firefox.
+2. Select **This Firefox**.
+3. Click **Load Temporary Add-on**.
+4. Select the `manifest.json` file in this directory.
+5. Reload pages that were already open.
 
-O popup permite ativar ou desativar a proteção. A mudança só afeta novas injeções, portanto as páginas devem ser recarregadas.
+The popup lets you enable or disable protection. The change affects only new injections, so pages must be reloaded.
 
-## Desenvolvimento e verificação
+## Development and verification
 
-Requisitos: Node.js 20 ou superior, npm e o utilitário `zip` para o build local.
+Requirements: Node.js 20 or later, npm, and the `zip` utility for local builds.
 
 ```bash
 npm ci
@@ -82,40 +82,40 @@ npm run lint
 npm run build
 ```
 
-`npm run lint` baixa exatamente o `web-ext@10.5.0` declarado no script via `npx`; essa ferramenta não é dependência de runtime nem fica empacotada na extensão.
+`npm run lint` downloads exactly the `web-ext@10.5.0` version declared in the script through `npx`; this tool is not a runtime dependency and is not packaged with the extension.
 
-`npm run build` cria um ZIP versionado em `dist/` contendo somente os arquivos necessários à extensão. O diretório `dist` é ignorado pelo Git.
+`npm run build` creates a versioned ZIP in `dist/` containing only the files required by the extension. The `dist` directory is ignored by Git.
 
-A suíte local usa testes comportamentais com realms `vm` e mocks de APIs. Ela cobre idempotência WebGL, overloads com `dstOffset`, coordenadas Canvas, superfícies Audio, seed, settings, degradação de APIs, coerência de Plugins/MIME types e acessibilidade estática do popup. Esses testes não substituem uma execução em Firefox real.
+The local suite uses behavioral tests with `vm` realms and API mocks. It covers WebGL idempotence, `dstOffset` overloads, Canvas coordinates, Audio surfaces, seeds, settings, API degradation, Plugin/MIME type coherence, and static popup accessibility. These tests do not replace execution in real Firefox.
 
-Antes de distribuir uma versão, verifique manualmente no Firefox:
+Before distributing a version, manually verify the following in Firefox:
 
-- página HTTP e HTTPS com scripts inline precoces;
-- iframe same-origin, cross-origin, `about:blank` e `srcdoc`;
-- PDF.js e upload/exportação de imagens;
-- chamadas WebGL 1 e WebGL 2, incluindo PBO;
-- `AudioBuffer`, `AnalyserNode`, workers e `OffscreenCanvas`;
-- navegação após desativar e reativar a extensão;
-- teclado, foco visível e mensagens de erro do popup.
+- HTTP and HTTPS pages with early inline scripts;
+- same-origin, cross-origin, `about:blank`, and `srcdoc` iframes;
+- PDF.js and image upload/export;
+- WebGL 1 and WebGL 2 calls, including PBOs;
+- `AudioBuffer`, `AnalyserNode`, workers, and `OffscreenCanvas`;
+- navigation after disabling and re-enabling the extension;
+- keyboard access, visible focus, and popup error messages.
 
-## Arquivos principais
+## Main files
 
-| Arquivo | Função |
+| File | Purpose |
 | --- | --- |
-| `manifest.json` | Manifesto Firefox MV2, permissões e regras de injeção |
-| `settings.js` | Defaults, schema, normalização e validação |
-| `seed.js` | Validação e geração criptográfica do seed |
-| `background.js` | Dono do estado e da comunicação de settings |
-| `content.js` | Ponte entre content script, background e página |
-| `inject.js` | Hooks de Canvas, WebGL, Audio, Navigator e Plugins/MIME types |
-| `popup.html`, `popup.js`, `popup.css` | Interface acessível de controle |
-| `tests/` | Harnesses e testes comportamentais |
-| `scripts/build.js` | Empacotamento do ZIP de distribuição |
+| `manifest.json` | Firefox MV2 manifest, permissions, and injection rules |
+| `settings.js` | Defaults, schema, normalization, and validation |
+| `seed.js` | Seed validation and cryptographic generation |
+| `background.js` | State owner and settings communication |
+| `content.js` | Bridge between the content script, background page, and page |
+| `inject.js` | Canvas, WebGL, Audio, Navigator, and Plugin/MIME type hooks |
+| `popup.html`, `popup.js`, `popup.css` | Accessible control interface |
+| `tests/` | Harnesses and behavioral tests |
+| `scripts/build.js` | Distribution ZIP packaging |
 
-## Privacidade
+## Privacy
 
-A extensão não possui analytics, telemetria, chamadas remotas ou integração com serviços externos. O conteúdo das páginas não é enviado para fora do navegador. As permissões de host existem para permitir content scripts nas páginas HTTP e HTTPS correspondentes.
+The extension has no analytics, telemetry, remote calls, or integrations with external services. Page content is not sent outside the browser. Host permissions exist to allow content scripts on matching HTTP and HTTPS pages.
 
-## Licença
+## License
 
-MIT. Consulte `LICENSE`.
+MIT. See `LICENSE`.
