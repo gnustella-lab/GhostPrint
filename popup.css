@@ -5,12 +5,12 @@
   --bg:        #13111c;
   --surface:   #1d1a2e;
   --border:    #2e2a45;
-  --accent:    #7c5cbf;
-  --accent-lo: #3a2d66;
+  --accent:    #b49cff;
+  --accent-lo: #55428f;
   --green:     #4ade80;
   --red:       #f87171;
   --text:      #e2e8f0;
-  --muted:     #8b8aaa;
+  --muted:     #b8b2d2;
   --radius:    10px;
 }
 
@@ -68,7 +68,13 @@ body {
   cursor: pointer;
 }
 
-.toggle input { display: none; }
+.toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  opacity: 0;
+}
 
 .slider {
   position: absolute;
@@ -92,6 +98,10 @@ body {
 
 .toggle input:checked + .slider            { background: var(--accent-lo); }
 .toggle input:checked + .slider::before   { transform: translateX(20px); background: var(--accent); }
+.toggle input:focus-visible + .slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 
 /* ─── Status Banner ─────────────────────────────────────────────────── */
 .status-banner {
@@ -107,6 +117,7 @@ body {
 
 .status-banner.active  { border-color: #4ade8044; }
 .status-banner.inactive { border-color: #f8717144; }
+.status-banner.error { border-color: #fbbf24aa; }
 
 .status-icon { font-size: 18px; }
 
@@ -117,6 +128,7 @@ body {
 
 .status-banner.active .status-text  { color: var(--green); }
 .status-banner.inactive .status-text { color: var(--red); }
+.status-banner.error .status-text { color: #fbbf24; }
 
 /* ─── Session Card ──────────────────────────────────────────────────── */
 .session-card {
@@ -173,7 +185,6 @@ body {
   background: var(--surface);
   border: 1px solid transparent;
   transition: border-color 0.15s;
-  cursor: pointer;
   user-select: none;
 }
 
@@ -228,4 +239,9 @@ body {
 .btn-reset:hover {
   border-color: var(--accent);
   color: var(--text);
+}
+
+.btn-reset:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }

@@ -65,14 +65,79 @@ test('different seeds produce different deterministic analyser output', () => {
   installInject(firstContext);
   installInject(secondContext);
 
-  const first = new Float32Array(128);
-  const second = new Float32Array(128);
+  const first = new Float32Array(4096);
+  const second = new Float32Array(4096);
   const firstAnalyser = new firstContext.AudioContext().createAnalyser();
   const secondAnalyser = new secondContext.AudioContext().createAnalyser();
-  firstAnalyser.frequencyBinCount = 128;
-  secondAnalyser.frequencyBinCount = 128;
+  firstAnalyser.frequencyBinCount = 4096;
+  secondAnalyser.frequencyBinCount = 4096;
   firstAnalyser.getFloatTimeDomainData(first);
   secondAnalyser.getFloatTimeDomainData(second);
 
   assert.equal(asBytes(first).equals(asBytes(second)), false);
+});
+
+test('copyToChannel does not farble samples outside the written range', async () => {
+  const context = createPageContext();
+  installInject(context);
+  const buffer = await new context.OfflineAudioContext().startRendering();
+  const before = buffer.channels[0].slice();
+  const source = new Float32Array([0.75]);
+
+  buffer.copyToChannel(source, 0, 9);
+
+  assert.equal(buffer.channels[0][9], 0.75);
+  for (let i = 0; i < before.length; i += 1) {
+    if (i !== 9) assert.equal(buffer.channels[0][i], before[i], `sample ${i}`);
+  }
+
+  const beforeEmptyWrite = buffer.channels[0].slice();
+  buffer.copyToChannel(new Float32Array(0), 0, 12);
+  assert.deepEqual(Array.from(buffer.channels[0]), Array.from(beforeEmptyWrite));
+});
+
+test('copyFromChannel fallback farbles destination indices using source offsets', async () => {
+  const expectedContext = createPageContext();
+  installInject(expectedContext);
+  const expectedBuffer = await new expectedContext.OfflineAudioContext().startRendering();
+  const expected = new Float32Array(128);
+  expectedBuffer.copyFromChannel(expected, 0, 9);
+
+  const fallbackContext = createPageContext({ missing: ['getChannelData'] });
+  installInject(fallbackContext);
+  const fallbackBuffer = await new fallbackContext.OfflineAudioContext().startRendering();
+  const actual = new Float32Array(128);
+  fallbackBuffer.copyFromChannel(actual, 0, 9);
+
+  assert.deepEqual(Array.from(actual), Array.from(expected));
+});
+
+test('re-evaluating inject.js does not accumulate Audio wrappers', async () => {
+  const context = createPageContext();
+  installInject(context);
+  const firstGetChannelData = context.AudioBuffer.prototype.getChannelData;
+  const firstCopyToChannel = context.AudioBuffer.prototype.copyToChannel;
+  const firstAnalyserMethod = context.AnalyserNode.prototype.getFloatTimeDomainData;
+  const firstStartRendering = context.OfflineAudioContext.prototype.startRendering;
+
+  installInject(context);
+
+  assert.strictEqual(context.AudioBuffer.prototype.getChannelData, firstGetChannelData);
+  assert.strictEqual(context.AudioBuffer.prototype.copyToChannel, firstCopyToChannel);
+  assert.strictEqual(context.AnalyserNode.prototype.getFloatTimeDomainData, firstAnalyserMethod);
+  assert.strictEqual(context.OfflineAudioContext.prototype.startRendering, firstStartRendering);
+});
+
+test('invalid analyser frequencyBinCount does not farble untouched output', () => {
+  const context = createPageContext();
+  installInject(context);
+  const analyser = new context.AudioContext().createAnalyser();
+
+  for (const value of [0, -1, NaN]) {
+    analyser.frequencyBinCount = value;
+    const output = new Float32Array(4096);
+    output.fill(1.25);
+    analyser.getFloatTimeDomainData(output);
+    assert.equal(output.every((sample) => sample === 1.25), true, String(value));
+  }
 });

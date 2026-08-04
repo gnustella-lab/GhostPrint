@@ -9,8 +9,10 @@ let injectionState = 'pending';
 // URL. This is the robust pattern (used by uBlock Origin): extension-origin
 // script loads are NOT blocked by the page's Content-Security-Policy,
 // whereas inline <script> textContent injection is silently blocked on
-// CSP-strict sites. The seed is written before this function runs, so the
-// page-context script can validate and reuse exactly the same value.
+// CSP-strict sites. The validated seed is also carried in the fragment, so
+// page-controlled sessionStorage cannot change the value used by the page
+// realm between this step and script start. The page can still observe or
+// attempt to interfere with the injected element.
 function installHooks() {
   if (seed === null) {
     injectionState = 'seed-unavailable';
@@ -18,14 +20,23 @@ function installHooks() {
   }
   try {
     const script = document.createElement('script');
-    script.src = browser.runtime.getURL('inject.js');
+    script.src = `${browser.runtime.getURL('inject.js')}#seed=${seed}`;
+    script.onload = () => {
+      script.remove();
+    };
+    script.onerror = () => {
+      seed = null;
+      injectionState = 'injection-failed';
+      script.remove();
+    };
     (document.head || document.documentElement).appendChild(script);
-    // Removing the element right away is safe: the fetch was already started,
-    // and the spec keeps executing scripts that have "already started".
-    script.remove();
+    // Keep the element connected until the external script has loaded. Removing
+    // it before the post-connection steps can prevent the browser from
+    // preparing and executing a dynamically inserted script.
     injectionState = 'installed';
     return true;
   } catch (_) {
+    seed = null;
     injectionState = 'injection-failed';
     return false;
   }
@@ -74,5 +85,11 @@ initializeContentScript().catch(() => {
 browser.runtime.onMessage.addListener((message) => {
   if (message && message.type === 'GET_SEED') {
     return Promise.resolve(seed === null ? undefined : seed);
+  }
+  if (message && message.type === 'GET_INJECTION_STATUS') {
+    return Promise.resolve({
+      state: injectionState,
+      seed: seed === null ? undefined : seed,
+    });
   }
 });

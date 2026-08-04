@@ -1,5 +1,7 @@
 # Build artifacts
 *.zip
+dist/
+node_modules/
 
 # Bug-hunt tracking artifacts (local session state, not part of the extension)
 bugs-observed.json

@@ -6,7 +6,8 @@
   "scripts": {
     "test": "node --test",
     "check": "node --check settings.js && node --check background.js && node --check content.js && node --check popup.js && node --check inject.js",
-    "lint": "web-ext lint --source-dir . --no-config-discovery"
+    "lint": "npx --yes web-ext@10.5.0 lint --source-dir . --no-config-discovery",
+    "build": "node scripts/build.js"
   },
   "engines": {
     "node": ">=20"

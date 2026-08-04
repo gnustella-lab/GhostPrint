@@ -111,7 +111,8 @@ class PageAudioBuffer {
   }
 
   copyFromChannel(destination, channel, startInChannel = 0) {
-    const source = this.getChannelData(channel);
+    const source = this.channels[channel];
+    if (!source) throw new RangeError('channel out of range');
     if (startInChannel < 0 || startInChannel + destination.length > source.length) {
       throw new RangeError('copy out of range');
     }
@@ -120,7 +121,8 @@ class PageAudioBuffer {
   }
 
   copyToChannel(source, channel, startInChannel = 0) {
-    const destination = this.getChannelData(channel);
+    const destination = this.channels[channel];
+    if (!destination) throw new RangeError('channel out of range');
     destination.set(source, startInChannel);
     return undefined;
   }
@@ -258,9 +260,11 @@ function createPageContext({ seed = '123456789', missing = [] } = {}) {
     }
   }
 
+  const pageDocument = new LocalDocument();
+  pageDocument.currentScript = { src: `moz-extension://test/inject.js#seed=${seed}` };
   const context = {
     console,
-    document: new LocalDocument(),
+    document: pageDocument,
     navigator: new LocalNavigator(),
     sessionStorage: new FakeStorage(seed),
     CanvasRenderingContext2D: LocalCanvas2DContext,

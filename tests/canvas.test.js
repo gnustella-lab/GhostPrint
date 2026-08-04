@@ -73,3 +73,15 @@ test('concurrent toBlob calls use isolated temporary canvases', async () => {
   assert.equal(blobs[0].type, 'image/png');
   assert.equal(blobs[1].type, 'image/webp');
 });
+
+test('toBlob forwards omitted optional arguments without rebuilding the call', async () => {
+  const context = createPageContext();
+  installInject(context);
+  const canvas = new context.HTMLCanvasElement();
+
+  const blob = await new Promise((resolve) => canvas.toBlob(resolve));
+
+  assert.equal(blob.argCount, 1);
+  assert.equal(blob.type, undefined);
+  assert.equal(blob.quality, undefined);
+});

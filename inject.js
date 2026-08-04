@@ -1,9 +1,8 @@
-// GhostPrint — runs in the page's JavaScript context.
+// GhostPrint, runs in the page's JavaScript context.
 //
-// Sole goal: make EFF's Cover Your Tracks award the "your browser has a
-// randomized fingerprint" status (the green badge Brave gets). That status
-// requires ≥ 4 of these five fields to differ between first-party domains:
-//   audio, canvas_hash_v2, webgl_hash_v2, plugins, hardware_concurrency
+// The hooks below apply deterministic farbling to selected fingerprinting
+// surfaces. They are not a complete browser privacy boundary and do not claim
+// equivalence with Brave, Tor Browser, or Firefox Resist Fingerprinting.
 //
 // Design: Brave-style farbling. Every read of canvas pixels returns the real
 // pixels perturbed by tiny, seed-determined noise (~1 in 32 pixels, ±1 per
@@ -28,18 +27,16 @@
 // value-dependent noise is safe there; a per-channel cache keeps repeated
 // reads identical.
 //
-// The seed comes from sessionStorage, written by content.js under
-// STORAGE_KEY (this is the same store the page context sees). The value is
-// validated; anything unparseable falls back to a per-page random seed so
-// pages cannot collapse all origins to seed 0.
+// The seed is carried by content.js in the external script URL fragment. The
+// value is validated without using page-visible storage. Without a verified
+// seed, no page hooks are installed, avoiding disagreement between the content
+// script and the page context.
 
 (function () {
   'use strict';
 
-  const STORAGE_KEY = '__ghostprint_seed_v1__'; // must match seed.js/content.js
   const SEED_MIN = 1;
   const SEED_MAX = 0xFFFFFFFE;
-  const MAX_CRYPTO_ATTEMPTS = 8;
 
   function parsePageSeed(value) {
     if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
@@ -48,40 +45,72 @@
     return parsed;
   }
 
-  function generatePageSeed(cryptoSource) {
-    if (!cryptoSource || typeof cryptoSource.getRandomValues !== 'function') return null;
-    const values = new Uint32Array(1);
-    for (let attempt = 0; attempt < MAX_CRYPTO_ATTEMPTS; attempt += 1) {
-      try {
-        cryptoSource.getRandomValues(values);
-      } catch (_) {
-        return null;
-      }
-      const candidate = values[0] >>> 0;
-      if (candidate >= SEED_MIN && candidate <= SEED_MAX) return candidate;
+
+  function parseSeedFromCurrentScript() {
+    try {
+      const currentScript = typeof document !== 'undefined' ? document.currentScript : null;
+      const source = currentScript && typeof currentScript.src === 'string'
+        ? currentScript.src
+        : '';
+      const marker = '#seed=';
+      const markerIndex = source.indexOf(marker);
+      if (markerIndex < 0) return null;
+      const encoded = source.slice(markerIndex + marker.length).split('&', 1)[0];
+      return parsePageSeed(decodeURIComponent(encoded));
+    } catch (_) {
+      return null;
     }
-    return null;
   }
 
-  let SEED = null;
-  try {
-    const stored = parsePageSeed(sessionStorage.getItem(STORAGE_KEY));
-    if (stored !== null) {
-      SEED = stored;
-    } else {
-      const generated = generatePageSeed(typeof crypto !== 'undefined' ? crypto : null);
-      if (generated !== null) {
-        sessionStorage.setItem(STORAGE_KEY, String(generated));
-        if (parsePageSeed(sessionStorage.getItem(STORAGE_KEY)) === generated) {
-          SEED = generated;
-        }
-      }
-    }
-  } catch (_) {}
+  const SEED = parseSeedFromCurrentScript();
 
   // Without a verified seed, do not install hooks that would disagree with
   // the content script or collapse all origins to a shared fallback.
   if (SEED === null) return;
+
+  // A WeakSet created in this evaluation cannot prevent a second evaluation
+  // of this file from wrapping the same realm again. Keep only installer state
+  // in a non-enumerable per-realm registry; no API object receives a marker.
+  // Use an unregistered symbol so pages cannot address the registry through a
+  // predictable Symbol.for key. The symbol itself is still page-observable to
+  // hostile code enumerating every own symbol, so this is concealment, not a
+  // security boundary.
+  const REGISTRY_FALLBACK_KEY = '__ghostprint_installation_v1__';
+  const pageGlobal = typeof globalThis !== 'undefined' ? globalThis : window;
+  let installationRegistry;
+  try {
+    const canUsePrivateSymbol = typeof Symbol === 'function'
+      && typeof Object.getOwnPropertySymbols === 'function';
+    if (canUsePrivateSymbol) {
+      const symbols = Object.getOwnPropertySymbols(pageGlobal);
+      for (const symbol of symbols) {
+        const candidate = pageGlobal[symbol];
+        if (candidate && candidate.version === 1
+          && candidate.installers && candidate.patchedWebGLContexts) {
+          installationRegistry = candidate;
+          break;
+        }
+      }
+    } else {
+      installationRegistry = pageGlobal[REGISTRY_FALLBACK_KEY];
+    }
+    if (!installationRegistry) {
+      installationRegistry = {
+        version: 1,
+        patchedWebGLContexts: new WeakSet(),
+        installers: Object.create(null),
+      };
+      const registryKey = canUsePrivateSymbol ? Symbol() : REGISTRY_FALLBACK_KEY;
+      Object.defineProperty(pageGlobal, registryKey, {
+        value: installationRegistry,
+        configurable: false,
+        enumerable: false,
+        writable: false,
+      });
+    }
+  } catch (_) {
+    return;
+  }
 
   // ─── Deterministic 32-bit hash mixer ─────────────────────────────────────
   // Stateless. Same args + same SEED → same output, always.
@@ -97,7 +126,10 @@
   function defineGetter(obj, prop, getter) {
     try {
       Object.defineProperty(obj, prop, { get: getter, configurable: true, enumerable: true });
-    } catch (_) {}
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ─── CANVAS ──────────────────────────────────────────────────────────────
@@ -116,12 +148,6 @@
   // different noise → a different hash → the cross-domain difference EFF
   // rewards with the "randomized fingerprint" status.
 
-  const origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-  const origToDataURL    = HTMLCanvasElement.prototype.toDataURL;
-  const origToBlob       = HTMLCanvasElement.prototype.toBlob;
-  const origGetContext   = HTMLCanvasElement.prototype.getContext;
-  const origCreateElement = Document.prototype.createElement;
-
   function clampByte(v) {
     return v < 0 ? 0 : v > 255 ? 255 : v;
   }
@@ -131,12 +157,42 @@
     return Number.isFinite(number) ? Math.trunc(number) : 0;
   }
 
+  function isTypedArray(value, name) {
+    return Boolean(
+      value &&
+      typeof ArrayBuffer !== 'undefined' &&
+      ArrayBuffer.isView(value) &&
+      Object.prototype.toString.call(value) === `[object ${name}]`,
+    );
+  }
+
+  function installCanvasProtection() {
+    if (installationRegistry.installers.canvas) {
+      return { installed: true, reason: 'already-installed' };
+    }
+    const Canvas2DClass = typeof CanvasRenderingContext2D !== 'undefined'
+      ? CanvasRenderingContext2D
+      : null;
+    const CanvasElementClass = typeof HTMLCanvasElement !== 'undefined'
+      ? HTMLCanvasElement
+      : null;
+    const DocumentClass = typeof Document !== 'undefined' ? Document : null;
+    if (!Canvas2DClass || !CanvasElementClass || !DocumentClass) {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+
+    const origGetImageData = Canvas2DClass.prototype.getImageData;
+    const origToDataURL = CanvasElementClass.prototype.toDataURL;
+    const origToBlob = CanvasElementClass.prototype.toBlob;
+    const origGetContext = CanvasElementClass.prototype.getContext;
+    const origCreateElement = DocumentClass.prototype.createElement;
+
   // Perturb pixel data in place: nudge a sparse, seed-determined subset of
   // pixels by -1/0/+1 per RGB channel. Alpha is left untouched. Coordinates
   // are absolute within the source canvas, so overlapping reads receive the
   // same perturbation for the same seed and source pixels.
   function farblePixels(data, width, height, originX, originY, sourceWidth, sourceHeight) {
-    if (!(data instanceof Uint8ClampedArray) || data.length % 4 !== 0) return;
+    if (!isTypedArray(data, 'Uint8ClampedArray') || data.length % 4 !== 0) return;
     if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return;
 
     const pixelCount = Math.min(data.length / 4, width * height);
@@ -223,14 +279,15 @@
     }
   }
 
-  CanvasRenderingContext2D.prototype.getImageData = function () {
+    if (typeof origGetImageData === 'function') {
+      Canvas2DClass.prototype.getImageData = function () {
     const imageData = Reflect.apply(origGetImageData, this, arguments);
     try {
       const settings = arguments[4];
       const pixelFormat = settings && settings.pixelFormat;
       const data = imageData && imageData.data;
       if (pixelFormat && pixelFormat !== 'rgba-unorm8') return imageData;
-      if (!(data instanceof Uint8ClampedArray) || data.length % 4 !== 0) return imageData;
+      if (!isTypedArray(data, 'Uint8ClampedArray') || data.length % 4 !== 0) return imageData;
 
       const width = toInteger(imageData.width);
       const height = toInteger(imageData.height);
@@ -250,21 +307,36 @@
       );
     } catch (_) {}
     return imageData;
-  };
+      };
+    }
 
-  HTMLCanvasElement.prototype.toDataURL = function (type, quality) {
+    if (typeof origToDataURL === 'function' &&
+        typeof origCreateElement === 'function' &&
+        typeof origGetContext === 'function' &&
+        typeof origGetImageData === 'function') {
+      CanvasElementClass.prototype.toDataURL = function () {
     const copy = farbledCopy(this, true); // synchronous encode: scratch reuse is safe
-    if (copy) return origToDataURL.call(copy, type, quality);
-    return origToDataURL.call(this, type, quality);
-  };
+    if (copy) return Reflect.apply(origToDataURL, copy, arguments);
+    return Reflect.apply(origToDataURL, this, arguments);
+      };
+    }
 
-  HTMLCanvasElement.prototype.toBlob = function (callback, type, quality) {
+    if (typeof origToBlob === 'function' &&
+        typeof origCreateElement === 'function' &&
+        typeof origGetContext === 'function' &&
+        typeof origGetImageData === 'function') {
+      CanvasElementClass.prototype.toBlob = function () {
     // Fresh canvas per call: the encode runs asynchronously and reads the
     // bitmap at encode time, so a shared scratch would race (BUG-0013).
     const copy = farbledCopy(this, false);
-    if (copy) return origToBlob.call(copy, callback, type, quality);
-    return origToBlob.call(this, callback, type, quality);
-  };
+    if (copy) return Reflect.apply(origToBlob, copy, arguments);
+    return Reflect.apply(origToBlob, this, arguments);
+      };
+    }
+
+    installationRegistry.installers.canvas = true;
+    return { installed: true };
+  }
 
   // ─── WEBGL ───────────────────────────────────────────────────────────────
   // Fingerprint2 reads the rendered WebGL canvas via `gl.canvas.toDataURL()`
@@ -275,28 +347,49 @@
   // (4 bytes/pixel) the nudge loop assumes. Other format/type combos (e.g.
   // RGB with 3 bytes/pixel, or float buffers) are left untouched so a ±1
   // nudge can't misalign and corrupt legitimate reads.
-  const patchedWebGLContexts = new WeakSet();
+  function installWebGLProtection() {
+    if (installationRegistry.installers.webgl) {
+      return { installed: true, reason: 'already-installed' };
+    }
+    const CanvasElementClass = typeof HTMLCanvasElement !== 'undefined'
+      ? HTMLCanvasElement
+      : null;
+    if (!CanvasElementClass || typeof CanvasElementClass.prototype.getContext !== 'function') {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+    const origGetContext = CanvasElementClass.prototype.getContext;
+    const patchedWebGLContexts = installationRegistry.patchedWebGLContexts;
 
   function patchWebGLContext(ctx) {
     if (patchedWebGLContexts.has(ctx) || !ctx || typeof ctx.readPixels !== 'function') return;
 
+    const DEBUG_RENDERER_EXTENSION = 'WEBGL_debug_renderer_info';
+    const UNMASKED_VENDOR_WEBGL = 0x9245;
+    const UNMASKED_RENDERER_WEBGL = 0x9246;
     const originalReadPixels = ctx.readPixels;
     const patchedReadPixels = function () {
       const args = arguments;
       Reflect.apply(originalReadPixels, this, args);
 
-      const width = args[2];
-      const height = args[3];
+      const width = toInteger(args[2]);
+      const height = toInteger(args[3]);
       const format = args[4];
       const type = args[5];
       const pixels = args[6];
+      // WebGL 2 also accepts a numeric PBO offset in args[6]. Only typed-array
+      // reads expose bytes that this wrapper can safely post-process.
+      const dstOffset = typeof args[7] === 'number' ? toInteger(args[7]) : 0;
+      const byteCount = width > 0 && height > 0 ? width * height * 4 : 0;
+      const start = Math.max(0, dstOffset);
+      const end = Math.min(pixels && pixels.length, start + byteCount);
       // WebGL contexts always define these constants (spec); no fallbacks needed.
       const isRGBA = format === ctx.RGBA;
       const isUint8 = type === ctx.UNSIGNED_BYTE;
-      if (pixels && isRGBA && isUint8 &&
-          (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray)) {
-        for (let i = 0; i + 3 < pixels.length; i += 4) {
-          const hash = mix(i, width, height, pixels[i], pixels[i + 1], pixels[i + 2]);
+      if (byteCount > 0 && pixels && isRGBA && isUint8 &&
+          (isTypedArray(pixels, 'Uint8Array') || isTypedArray(pixels, 'Uint8ClampedArray'))) {
+        for (let i = start; i + 3 < end; i += 4) {
+          const pixelIndex = i - start;
+          const hash = mix(pixelIndex, width, height, pixels[i], pixels[i + 1], pixels[i + 2]);
           if ((hash & 0x1f) === 0) {
             pixels[i]     = clampByte(pixels[i]     + ((hash >>> 5)  % 3) - 1);
             pixels[i + 1] = clampByte(pixels[i + 1] + ((hash >>> 11) % 3) - 1);
@@ -306,30 +399,87 @@
       }
     };
 
+    // Mark before assignment: if a browser exposes a non-writable native
+    // method, a later getContext call must not stack another readPixels wrapper
+    // over the partially patched context.
+    patchedWebGLContexts.add(ctx);
     try {
       ctx.readPixels = patchedReadPixels;
-      patchedWebGLContexts.add(ctx);
     } catch (_) {}
+
+    const originalGetExtension = typeof ctx.getExtension === 'function'
+      ? ctx.getExtension
+      : null;
+    if (originalGetExtension) {
+      try {
+        ctx.getExtension = function () {
+          if (arguments[0] === DEBUG_RENDERER_EXTENSION) return null;
+          return Reflect.apply(originalGetExtension, this, arguments);
+        };
+      } catch (_) {}
+    }
+
+    const originalGetSupportedExtensions = typeof ctx.getSupportedExtensions === 'function'
+      ? ctx.getSupportedExtensions
+      : null;
+    if (originalGetSupportedExtensions) {
+      try {
+        ctx.getSupportedExtensions = function () {
+          const extensions = Reflect.apply(originalGetSupportedExtensions, this, arguments);
+          if (!Array.isArray(extensions)) return extensions;
+          return extensions.filter((name) => name !== DEBUG_RENDERER_EXTENSION);
+        };
+      } catch (_) {}
+    }
+
+    const originalGetParameter = typeof ctx.getParameter === 'function'
+      ? ctx.getParameter
+      : null;
+    if (originalGetParameter) {
+      try {
+        ctx.getParameter = function () {
+          const parameter = arguments[0];
+          if (parameter === UNMASKED_VENDOR_WEBGL || parameter === UNMASKED_RENDERER_WEBGL) {
+            return null;
+          }
+          return Reflect.apply(originalGetParameter, this, arguments);
+        };
+      } catch (_) {}
+    }
   }
 
-  HTMLCanvasElement.prototype.getContext = function (type, attrs) {
-    const ctx = origGetContext.call(this, type, attrs);
-    if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
-      patchWebGLContext(ctx);
-    }
-    return ctx;
-  };
+    CanvasElementClass.prototype.getContext = function () {
+      const type = arguments[0];
+      const ctx = Reflect.apply(origGetContext, this, arguments);
+      if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
+        patchWebGLContext(ctx);
+      }
+      return ctx;
+    };
 
-  // ─── AUDIO ───────────────────────────────────────────────────────────────
-  // Protect each available read surface independently. AudioBuffer samples are
-  // farbled in place only after the native read succeeds, so
-  // getChannelData/copyFromChannel observe the same stable view.
-  const OfflineAudioCtxClass = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
-  const AudioBufferClass = window.AudioBuffer;
-  const AnalyserNodeClass = window.AnalyserNode;
-  const audioBufferStates = new WeakMap();
-  const patchedAnalyserNodes = new WeakSet();
+    installationRegistry.installers.webgl = true;
+    return { installed: true };
+  }
+
+  function installAudioProtection() {
+    if (installationRegistry.installers.audio) {
+      return { installed: true, reason: 'already-installed' };
+    }
+    const pageWindow = typeof window !== 'undefined' ? window : null;
+    if (!pageWindow) return { installed: false, reason: 'api-unavailable' };
+
+    // Protect each available read surface independently. AudioBuffer samples are
+    // farbled in place only after the native read succeeds, so
+    // getChannelData/copyFromChannel observe the same stable view.
+    const OfflineAudioCtxClass = pageWindow.OfflineAudioContext || pageWindow.webkitOfflineAudioContext;
+    const AudioCtxClass = pageWindow.AudioContext || pageWindow.webkitAudioContext;
+    const AudioBufferClass = pageWindow.AudioBuffer;
+    const AnalyserNodeClass = pageWindow.AnalyserNode;
+    if (!OfflineAudioCtxClass && !AudioCtxClass && !AudioBufferClass && !AnalyserNodeClass) {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+    const audioBufferStates = new WeakMap();
+    const patchedAnalyserNodes = new WeakSet();
 
   function getAudioBufferState(buffer) {
     let state = audioBufferStates.get(buffer);
@@ -340,14 +490,15 @@
     return state;
   }
 
-  function farbleAudioRange(data, channel, start, end) {
-    if (!(data instanceof Float32Array)) return;
+  function farbleAudioRange(data, channel, start, end, logicalStart = start) {
+    if (!isTypedArray(data, 'Float32Array')) return;
     const first = Math.max(0, toInteger(start));
     const last = Math.min(data.length, Math.max(first, toInteger(end)));
+    const logicalBase = toInteger(logicalStart);
     for (let i = first; i < last; i += 1) {
       const value = data[i];
       if (!Number.isFinite(value)) continue;
-      const h = mix(0xA710, channel, i);
+      const h = mix(0xA710, channel, logicalBase + (i - first));
       if ((h & 0xff) < 8) {
         data[i] = value + ((h / 0x100000000) - 0.5) * 1e-4;
       }
@@ -407,27 +558,28 @@
               for (let i = 0; i < count; i += 1) destination[i] = sourceData[start + i];
             }
           } else {
-            farbleAudioRange(destination, channel, start, start + (destination ? destination.length : 0));
+            const count = destination && typeof destination.length === 'number'
+              ? destination.length
+              : 0;
+            farbleAudioRange(destination, channel, 0, count, start);
           }
         } catch (_) {}
         return result;
       };
     }
 
-    if (originalCopyToChannel && originalGetChannelData) {
+    if (originalCopyToChannel) {
       proto.copyToChannel = function () {
         const result = Reflect.apply(originalCopyToChannel, this, arguments);
-        try {
+        if (originalGetChannelData) try {
           const source = arguments[0];
           const channel = toInteger(arguments[1]);
           const start = toInteger(arguments[2]);
           const state = getAudioBufferState(this);
-          const data = Reflect.apply(originalGetChannelData, this, [channel]);
           if (state.farbledChannels.has(channel)) {
-            farbleAudioRange(data, channel, start, start + (source ? source.length : 0));
-          } else {
-            farbleAudioRange(data, channel, 0, data.length);
-            state.farbledChannels.add(channel);
+            const data = Reflect.apply(originalGetChannelData, this, [channel]);
+            const count = source && typeof source.length === 'number' ? source.length : 0;
+            farbleAudioRange(data, channel, start, start + count);
           }
         } catch (_) {}
         return result;
@@ -437,11 +589,12 @@
 
   function farbleAnalyserArray(node, array, kind, tag) {
     if (!array || typeof array.length !== 'number') return;
-    const limitValue = toInteger(node && node.frequencyBinCount);
-    const limit = Math.min(array.length, limitValue > 0 ? limitValue : array.length);
+    const limitValue = Number(node && node.frequencyBinCount);
+    if (!Number.isSafeInteger(limitValue) || limitValue <= 0) return;
+    const limit = Math.min(array.length, limitValue);
     const isFloat = kind === 'float';
-    if (isFloat && !(array instanceof Float32Array)) return;
-    if (!isFloat && !(array instanceof Uint8Array)) return;
+    if (isFloat && !isTypedArray(array, 'Float32Array')) return;
+    if (!isFloat && !isTypedArray(array, 'Uint8Array')) return;
 
     for (let i = 0; i < limit; i += 1) {
       const value = array[i];
@@ -517,113 +670,250 @@
     };
   }
 
-  // ─── HARDWARE CONCURRENCY ────────────────────────────────────────────────
-  const HC_POOL = [2, 4, 6, 8, 12, 16];
-  const spoofedHC = HC_POOL[mix(0xC0FFEE) % HC_POOL.length];
-  defineGetter(Navigator.prototype, 'hardwareConcurrency', () => spoofedHC);
-  // Also override on the navigator instance — some browsers define the
-  // property there and prototype-level overrides get shadowed.
-  defineGetter(navigator, 'hardwareConcurrency', () => spoofedHC);
+    installationRegistry.installers.audio = true;
+    return { installed: true };
+  }
 
-  // ─── PDF VIEWER FLAG ─────────────────────────────────────────────────────
-  // Modern fingerprinters read navigator.pdfViewerEnabled (replaces the old
-  // plugins/mimeTypes checks). Farble it per-origin like the other vectors;
-  // sites may use it to decide PDF affordances, so the value only changes
-  // between origins, never within a page.
-  const spoofedPdf = (mix(0x0F1E0E) & 1) === 1;
-  defineGetter(Navigator.prototype, 'pdfViewerEnabled', () => spoofedPdf);
-  defineGetter(navigator, 'pdfViewerEnabled', () => spoofedPdf);
+  function installNavigatorProtection() {
+    if (installationRegistry.installers.navigator) {
+      return { installed: true, reason: 'already-installed' };
+    }
+    const NavigatorClass = typeof Navigator !== 'undefined' ? Navigator : null;
+    if (!NavigatorClass || typeof navigator === 'undefined') {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+    const HC_POOL = [2, 4, 6, 8, 12, 16];
+    const spoofedHC = HC_POOL[mix(0xC0FFEE) % HC_POOL.length];
+    defineGetter(NavigatorClass.prototype, 'hardwareConcurrency', () => spoofedHC);
+    // Also override on the navigator instance, some browsers define the
+    // property there and prototype-level overrides get shadowed.
+    defineGetter(navigator, 'hardwareConcurrency', () => spoofedHC);
 
-  // ─── PLUGINS ─────────────────────────────────────────────────────────────
-  // Append seed-determined fake plugins so the list differs per origin.
-  // EFF iterates navigator.plugins → name/description/filename, sorts the
-  // strings, and compares across first-party domains.
-  //
-  // Always inject 1-4 extras (never 0), and override on BOTH the instance
-  // and the prototype — Firefox defines navigator.plugins on the instance,
-  // so a prototype-only override gets shadowed and never takes effect.
-  try {
-    const realPlugins = navigator.plugins;
-    if (realPlugins && typeof realPlugins.length === 'number') {
+    installationRegistry.installers.navigator = true;
+    return { installed: true };
+  }
 
-      function fakeMime(type, description, suffixes) {
-        return { type, description, suffixes, enabledPlugin: null };
+  function installPluginProtection() {
+    if (installationRegistry.installers.plugins) {
+      return { installed: true, reason: 'already-installed' };
+    }
+    const NavigatorClass = typeof Navigator !== 'undefined' ? Navigator : null;
+    if (!NavigatorClass || typeof navigator === 'undefined') {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+    try {
+      const realPlugins = navigator.plugins;
+      const realMimeTypes = navigator.mimeTypes;
+      if (!realPlugins || typeof realPlugins.length !== 'number') {
+        return { installed: false, reason: 'api-unavailable' };
       }
-      const pdfMime    = fakeMime('application/pdf', 'Portable Document Format', 'pdf');
-      const textPdfMime = fakeMime('text/pdf',       'Portable Document Format', 'pdf');
 
-      // Diversified pool: not every fake is a PDF viewer, so the per-origin
-      // variation doesn't just shuffle PDF names. Each entry carries its own
-      // description/filename/mime set so name and content stay consistent.
+      const PluginClass = typeof Plugin !== 'undefined' ? Plugin : null;
+      const MimeTypeClass = typeof MimeType !== 'undefined' ? MimeType : null;
+
+      function createNativeLikeObject(Class, fallbackObject) {
+        let prototype;
+        try {
+          prototype = Class && Class.prototype
+            ? Class.prototype
+            : fallbackObject
+              ? Object.getPrototypeOf(fallbackObject)
+              : Object.prototype;
+          return Object.create(prototype);
+        } catch (_) {
+          try {
+            const object = {};
+            Object.setPrototypeOf(object, prototype || Object.prototype);
+            return object;
+          } catch (_) {
+            return {};
+          }
+        }
+      }
+
+      function setValue(target, property, value, enumerable = false) {
+        try {
+          Object.defineProperty(target, property, {
+            value,
+            writable: false,
+            configurable: true,
+            enumerable,
+          });
+        } catch (_) {}
+      }
+
+      function readItem(collection, index) {
+        try {
+          if (collection && typeof collection.item === 'function') {
+            return collection.item(index);
+          }
+        } catch (_) {}
+        try { return collection[index] || null; } catch (_) { return null; }
+      }
+
+      function appendUnique(entries, value) {
+        if (value && !entries.includes(value)) entries.push(value);
+      }
+
+      function appendUniqueMime(entries, value) {
+        if (!value) return;
+        const type = typeof value.type === 'string' ? value.type : null;
+        if (type !== null) {
+          if (!entries.some((entry) => entry && entry.type === type)) entries.push(value);
+          return;
+        }
+        appendUnique(entries, value);
+      }
+
+      function isPdfMime(mime) {
+        if (!mime || typeof mime.type !== 'string') return false;
+        return mime.type === 'application/pdf' || mime.type === 'text/pdf';
+      }
+
+      function isPdfPlugin(plugin) {
+        if (!plugin) return false;
+        const name = typeof plugin.name === 'string' ? plugin.name.toLowerCase() : '';
+        const description = typeof plugin.description === 'string'
+          ? plugin.description.toLowerCase()
+          : '';
+        if (name.includes('pdf') || description.includes('pdf')) return true;
+        if (typeof plugin.length !== 'number') return false;
+        for (let i = 0; i < plugin.length; i += 1) {
+          if (isPdfMime(readItem(plugin, i))) return true;
+        }
+        return false;
+      }
+
+      const pluginEntries = [];
+      for (let i = 0; i < realPlugins.length; i += 1) {
+        const plugin = readItem(realPlugins, i);
+        if (!isPdfPlugin(plugin)) appendUnique(pluginEntries, plugin);
+      }
+
+      const mimeEntries = [];
+      if (realMimeTypes && typeof realMimeTypes.length === 'number') {
+        for (let i = 0; i < realMimeTypes.length; i += 1) {
+          const mime = readItem(realMimeTypes, i);
+          if (!isPdfMime(mime)) appendUniqueMime(mimeEntries, mime);
+        }
+      }
+      for (const plugin of pluginEntries) {
+        if (!plugin || typeof plugin.length !== 'number') continue;
+        for (let i = 0; i < plugin.length; i += 1) {
+          const mime = readItem(plugin, i);
+          if (!isPdfMime(mime)) appendUniqueMime(mimeEntries, mime);
+        }
+      }
+
       const FAKE_POOL = [
-        { name: 'WebKit built-in PDF',     description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'PDF.js',                  description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'Foxit PDF Viewer',        description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'Brave PDF Viewer',        description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'Edge PDF Viewer',         description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'Safari PDF Reader',       description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'Sumatra PDF',             description: 'Portable Document Format',          filename: 'internal-pdf-viewer', mimes: [pdfMime, textPdfMime] },
-        { name: 'OpenH264 Video Decoder',  description: 'OpenH264 video codec for Firefox',  filename: 'libgmpopenh264',      mimes: [fakeMime('video/h264', 'H.264 video codec', 'mp4')] },
-        { name: 'Widevine CDM',            description: 'Playback of DRM-protected content', filename: 'libwidevinecdm',      mimes: [fakeMime('application/x-ppapi-widevine-cdm', 'Widevine DRM', '')] },
+        { name: 'PDF.js', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+        { name: 'Mozilla PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+        { name: 'Portable Document Format', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
       ];
-
-      function makeFakePlugin(entry) {
-        const mimes = entry.mimes.map((m) => ({ ...m, enabledPlugin: null }));
-        const p = {
-          name: entry.name,
-          description: entry.description,
-          filename: entry.filename,
-          length: mimes.length,
-          item: function (i) { return this[i] || null; },
-          namedItem: function (n) { return mimes.find((m) => m.type === n) || null; },
-        };
-        for (let i = 0; i < mimes.length; i++) p[i] = mimes[i];
-        return p;
-      }
-
-      // Always 1-4 extras (never 0) so plugin list always differs from the
-      // baseline set; dedupe the picks so a seed can't produce two copies
-      // of the same fake plugin.
-      const extraCount = (mix(0xBADC0DE) % 4) + 1;
-      const chosen = new Set();
-      for (let k = 0; chosen.size < extraCount && k < 32; k++) {
-        chosen.add(mix(0xF00BAA, k) % FAKE_POOL.length);
-      }
-      const fakes = [];
-      for (const idx of chosen) fakes.push(makeFakePlugin(FAKE_POOL[idx]));
-
-      const totalLen = realPlugins.length + fakes.length;
-
-      const proxyPlugins = new Proxy(realPlugins, {
-        get(target, prop) {
-          if (prop === 'length') return totalLen;
-          if (typeof prop === 'string' && /^\d+$/.test(prop)) {
-            const idx = parseInt(prop, 10);
-            if (idx < realPlugins.length) return realPlugins[idx];
-            return fakes[idx - realPlugins.length];
-          }
-          if (prop === 'item') return function (i) {
-            if (i < realPlugins.length) return realPlugins.item(i);
-            return fakes[i - realPlugins.length] || null;
-          };
-          if (prop === 'namedItem') return function (n) {
-            const fake = fakes.find((p) => p.name === n);
-            if (fake) return fake;
-            return realPlugins.namedItem(n);
-          };
-          if (prop === 'refresh') return function () {};
-          if (prop === Symbol.iterator) {
-            return function* () {
-              for (let i = 0; i < realPlugins.length; i++) yield realPlugins[i];
-              for (const f of fakes) yield f;
-            };
-          }
-          return Reflect.get(target, prop);
-        },
+      const profile = FAKE_POOL[mix(0xF00BAA) % FAKE_POOL.length];
+      const fakePlugin = createNativeLikeObject(PluginClass, pluginEntries[0]);
+      const fakeMimes = [
+        ['application/pdf', 'Portable Document Format', 'pdf'],
+        ['text/pdf', 'Portable Document Format', 'pdf'],
+      ].map(([type, description, suffixes]) => {
+        const mime = createNativeLikeObject(MimeTypeClass, mimeEntries[0]);
+        setValue(mime, 'type', type);
+        setValue(mime, 'description', description);
+        setValue(mime, 'suffixes', suffixes);
+        setValue(mime, 'enabledPlugin', fakePlugin);
+        return mime;
       });
 
-      defineGetter(navigator, 'plugins', () => proxyPlugins);
-      defineGetter(Navigator.prototype, 'plugins', () => proxyPlugins);
+      setValue(fakePlugin, 'name', profile.name);
+      setValue(fakePlugin, 'description', profile.description);
+      setValue(fakePlugin, 'filename', profile.filename);
+      setValue(fakePlugin, 'length', fakeMimes.length);
+      fakeMimes.forEach((mime, index) => setValue(fakePlugin, String(index), mime, true));
+      fakeMimes.forEach((mime) => setValue(fakePlugin, mime.type, mime));
+      setValue(fakePlugin, 'item', function item(index) {
+        if (this !== fakePlugin) throw new TypeError('Illegal invocation');
+        const i = toInteger(index);
+        return i >= 0 && i < fakeMimes.length ? fakeMimes[i] : null;
+      });
+      setValue(fakePlugin, 'namedItem', function namedItem(type) {
+        if (this !== fakePlugin) throw new TypeError('Illegal invocation');
+        return fakeMimes.find((mime) => mime.type === String(type)) || null;
+      });
+
+      pluginEntries.push(fakePlugin);
+      for (const mime of fakeMimes) mimeEntries.push(mime);
+
+      function makeList(entries, nameProperty) {
+        const list = {};
+        setValue(list, 'length', entries.length);
+        entries.forEach((entry, index) => {
+          setValue(list, String(index), entry, true);
+          const name = entry && entry[nameProperty];
+          if (typeof name === 'string' && name.length > 0) {
+            setValue(list, name, entry);
+          }
+        });
+        setValue(list, 'item', function item(index) {
+          if (this !== list) throw new TypeError('Illegal invocation');
+          const i = toInteger(index);
+          return i >= 0 && i < entries.length ? entries[i] : null;
+        });
+        setValue(list, 'namedItem', function namedItem(name) {
+          if (this !== list) throw new TypeError('Illegal invocation');
+          const value = String(name);
+          return entries.find((entry) => entry && entry[nameProperty] === value) || null;
+        });
+        setValue(list, Symbol.iterator, function* iterator() {
+          if (this !== list) throw new TypeError('Illegal invocation');
+          for (const entry of entries) yield entry;
+        });
+        return list;
+      }
+
+      const pluginList = makeList(pluginEntries, 'name');
+      const mimeList = makeList(mimeEntries, 'type');
+      setValue(pluginList, 'refresh', function refresh() {
+        if (this !== pluginList) throw new TypeError('Illegal invocation');
+      });
+      const pluginsInstalled = defineGetter(
+        NavigatorClass.prototype,
+        'plugins',
+        () => pluginList,
+      );
+      const mimeTypesInstalled = defineGetter(
+        NavigatorClass.prototype,
+        'mimeTypes',
+        () => mimeList,
+      );
+      if (!pluginsInstalled) defineGetter(navigator, 'plugins', () => pluginList);
+      if (!mimeTypesInstalled) defineGetter(navigator, 'mimeTypes', () => mimeList);
+      installationRegistry.installers.plugins = true;
+      return { installed: true };
+    } catch (_) {
+      return { installed: false, reason: 'installer-error' };
     }
-  } catch (_) {}
+  }
+
+  function runInstaller(name, installer) {
+    try {
+      const result = installer();
+      return result && typeof result === 'object'
+        ? result
+        : { installed: Boolean(result) };
+    } catch (_) {
+      return { installed: false, reason: 'installer-error' };
+    }
+  }
+
+  // Keep the result private. Exposing it on window would give pages a direct
+  // feature-detection oracle. The extension context can still use the same
+  // runner when a privileged diagnostic channel is added later.
+  const installationResults = {
+    canvas: runInstaller('canvas', installCanvasProtection),
+    webgl: runInstaller('webgl', installWebGLProtection),
+    audio: runInstaller('audio', installAudioProtection),
+    navigator: runInstaller('navigator', installNavigatorProtection),
+    plugins: runInstaller('plugins', installPluginProtection),
+  };
+  void installationResults;
 })();

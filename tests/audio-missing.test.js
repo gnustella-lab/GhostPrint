@@ -25,3 +25,15 @@ test('missing audio APIs do not block the available protections', async () => {
   const output = new Float32Array(16);
   analyser.getFloatFrequencyData(output);
 });
+
+test('copyToChannel is installed independently when getChannelData is absent', async () => {
+  const context = createPageContext({ missing: ['getChannelData'] });
+  const nativeCopyToChannel = context.AudioBuffer.prototype.copyToChannel;
+  installInject(context);
+
+  assert.equal(typeof context.AudioBuffer.prototype.copyToChannel, 'function');
+  assert.notStrictEqual(context.AudioBuffer.prototype.copyToChannel, nativeCopyToChannel);
+
+  const buffer = await new context.OfflineAudioContext().startRendering();
+  assert.doesNotThrow(() => buffer.copyToChannel(new Float32Array([0.5]), 0, 2));
+});

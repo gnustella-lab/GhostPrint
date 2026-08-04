@@ -1,11 +1,11 @@
 'use strict';
 
 const EFF_FIELDS = [
-  { icon: '🔊', label: 'AudioContext' },
-  { icon: '🖼️', label: 'Canvas hash' },
-  { icon: '🎮', label: 'WebGL hash' },
-  { icon: '🧩', label: 'Plugins / MIME types' },
-  { icon: '⚙️', label: 'Hardware concurrency' },
+  { icon: '🔊', label: 'Áudio' },
+  { icon: '🖼️', label: 'Hash do Canvas' },
+  { icon: '🎮', label: 'Hash do WebGL' },
+  { icon: '🧩', label: 'Plugins / tipos MIME' },
+  { icon: '⚙️', label: 'Concorrência de hardware' },
 ];
 
 let currentSettings = cloneDefaultSettings();

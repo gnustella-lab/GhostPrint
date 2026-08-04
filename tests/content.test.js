@@ -72,7 +72,10 @@ test('enabled protection persists one verified crypto seed before injection', as
 
   assert.equal(result.values.get('__ghostprint_seed_v1__'), '3141592653');
   assert.equal(result.appended.length, 1);
-  assert.equal(result.appended[0].src, 'moz-extension://test/inject.js');
+  assert.equal(result.appended[0].src, 'moz-extension://test/inject.js#seed=3141592653');
+  assert.equal(result.appended[0].removed, undefined);
+  assert.equal(typeof result.appended[0].onload, 'function');
+  result.appended[0].onload();
   assert.equal(result.appended[0].removed, true);
   assert.equal(await result.seedListener({ type: 'GET_SEED' }), 3141592653);
 });
@@ -89,4 +92,19 @@ test('seed persistence failure prevents partial injection', async () => {
 
   assert.equal(result.appended.length, 0);
   assert.equal(await result.seedListener({ type: 'GET_SEED' }), undefined);
+});
+
+test('injection failure invalidates the seed exposed to the popup', async () => {
+  const result = await runContent({
+    settingsResponse: { ok: true, settings: { enabled: true } },
+    randomValue: 42,
+  });
+
+  result.appended[0].onerror();
+
+  assert.equal(result.appended[0].removed, true);
+  assert.equal(await result.seedListener({ type: 'GET_SEED' }), undefined);
+  const status = await result.seedListener({ type: 'GET_INJECTION_STATUS' });
+  assert.equal(status.state, 'injection-failed');
+  assert.equal(status.seed, undefined);
 });

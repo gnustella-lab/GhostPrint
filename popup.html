@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -12,37 +12,37 @@
     <!-- Header -->
     <header class="header">
       <div class="header-left">
-        <img src="icons/ghost.svg" alt="Ghost" class="logo">
+        <img src="icons/ghost.svg" alt="" class="logo" aria-hidden="true">
         <span class="title">GhostPrint</span>
       </div>
-      <label class="toggle" title="Enable or disable protection">
-        <input type="checkbox" id="globalToggle">
+      <label class="toggle" title="Ativar ou desativar proteção">
+        <input type="checkbox" id="globalToggle" aria-label="Ativar ou desativar proteção">
         <span class="slider"></span>
       </label>
     </header>
 
     <!-- Status Banner -->
-    <div class="status-banner" id="statusBanner">
+    <div class="status-banner" id="statusBanner" role="status" aria-live="polite" aria-atomic="true">
       <span class="status-icon" id="statusIcon">🛡️</span>
-      <span class="status-text" id="statusText">Protected</span>
+      <span class="status-text" id="statusText">Proteção ativa</span>
     </div>
 
     <!-- Session info -->
     <div class="session-card">
-      <div class="session-label">Active tab fingerprint seed</div>
+      <div class="session-label">Seed da aba ativa</div>
       <div class="session-seed" id="sessionSeed">—</div>
-      <div class="session-note">Per-site, per-session. Reload the page after installing or reloading the extension.</div>
+      <div class="session-note">Por site e por sessão. Recarregue a página após instalar ou recarregar a extensão.</div>
     </div>
 
     <!-- Protection list -->
-    <div class="section-title">Protections</div>
+    <div class="section-title">Proteções</div>
     <div class="protections" id="protectionsList">
       <!-- Populated by popup.js -->
     </div>
 
     <!-- Footer -->
     <footer class="footer">
-      <button class="btn-reset" id="resetBtn">Reset to defaults</button>
+      <button class="btn-reset" id="resetBtn" type="button">Restaurar padrões</button>
     </footer>
 
   </div>

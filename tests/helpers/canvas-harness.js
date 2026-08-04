@@ -102,7 +102,7 @@ function createPageContext({ seed = '123456789' } = {}) {
     }
 
     toBlob(callback, type, quality) {
-      const result = { canvasId: this.id, type, quality };
+      const result = { canvasId: this.id, type, quality, argCount: arguments.length };
       setTimeout(() => callback(result), 0);
     }
   }
@@ -125,9 +125,11 @@ function createPageContext({ seed = '123456789' } = {}) {
     }
   }
 
+  const pageDocument = new PageDocument();
+  pageDocument.currentScript = { src: `moz-extension://test/inject.js#seed=${seed}` };
   const context = {
     console,
-    document: new PageDocument(),
+    document: pageDocument,
     navigator: new PageNavigator(),
     sessionStorage: new FakeStorage(seed),
     CanvasRenderingContext2D: PageCanvas2DContext,
