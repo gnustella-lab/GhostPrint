@@ -97,16 +97,39 @@
     return v < 0 ? 0 : v > 255 ? 255 : v;
   }
 
+  function toInteger(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.trunc(number) : 0;
+  }
+
   // Perturb pixel data in place: nudge a sparse, seed-determined subset of
-  // pixels by -1/0/+1 per RGB channel. Alpha is left untouched. The change is
-  // visually undetectable but shifts the canvas hash deterministically.
-  function farblePixels(data, width, height) {
-    for (let i = 0; i + 3 < data.length; i += 4) {
-      const h = mix(i, width, height, data[i], data[i + 1], data[i + 2]);
-      if ((h & 0x1f) === 0) { // ~1 pixel in 32
-        data[i]     = clampByte(data[i]     + ((h >>> 5)  % 3) - 1);
-        data[i + 1] = clampByte(data[i + 1] + ((h >>> 11) % 3) - 1);
-        data[i + 2] = clampByte(data[i + 2] + ((h >>> 17) % 3) - 1);
+  // pixels by -1/0/+1 per RGB channel. Alpha is left untouched. Coordinates
+  // are absolute within the source canvas, so overlapping reads receive the
+  // same perturbation for the same seed and source pixels.
+  function farblePixels(data, width, height, originX, originY, sourceWidth, sourceHeight) {
+    if (!(data instanceof Uint8ClampedArray) || data.length % 4 !== 0) return;
+    if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return;
+
+    const pixelCount = Math.min(data.length / 4, width * height);
+    for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+      const localX = pixelIndex % width;
+      const localY = Math.floor(pixelIndex / width);
+      const absoluteX = originX + localX;
+      const absoluteY = originY + localY;
+      const index = pixelIndex * 4;
+      const h = mix(
+        absoluteX,
+        absoluteY,
+        sourceWidth,
+        sourceHeight,
+        data[index],
+        data[index + 1],
+        data[index + 2],
+      );
+      if ((h & 0x1f) === 0) {
+        data[index]     = clampByte(data[index]     + ((h >>> 5)  % 3) - 1);
+        data[index + 1] = clampByte(data[index + 1] + ((h >>> 11) % 3) - 1);
+        data[index + 2] = clampByte(data[index + 2] + ((h >>> 17) % 3) - 1);
       }
     }
   }
@@ -163,7 +186,7 @@
       if (!tctx) return null;
       tctx.drawImage(src, 0, 0);
       const id = origGetImageData.call(tctx, 0, 0, w, h);
-      farblePixels(id.data, w, h);
+      farblePixels(id.data, w, h, 0, 0, w, h);
       tctx.putImageData(id, 0, 0);
       return tmp;
     } catch (_) {
@@ -171,10 +194,33 @@
     }
   }
 
-  CanvasRenderingContext2D.prototype.getImageData = function (sx, sy, sw, sh) {
-    const id = origGetImageData.call(this, sx, sy, sw, sh);
-    farblePixels(id.data, sw, sh);
-    return id;
+  CanvasRenderingContext2D.prototype.getImageData = function () {
+    const imageData = Reflect.apply(origGetImageData, this, arguments);
+    try {
+      const settings = arguments[4];
+      const pixelFormat = settings && settings.pixelFormat;
+      const data = imageData && imageData.data;
+      if (pixelFormat && pixelFormat !== 'rgba-unorm8') return imageData;
+      if (!(data instanceof Uint8ClampedArray) || data.length % 4 !== 0) return imageData;
+
+      const width = toInteger(imageData.width);
+      const height = toInteger(imageData.height);
+      const sourceCanvas = this && this.canvas;
+      const sourceWidth = toInteger(sourceCanvas && sourceCanvas.width);
+      const sourceHeight = toInteger(sourceCanvas && sourceCanvas.height);
+      if (width <= 0 || height <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return imageData;
+
+      farblePixels(
+        data,
+        width,
+        height,
+        toInteger(arguments[0]),
+        toInteger(arguments[1]),
+        sourceWidth,
+        sourceHeight,
+      );
+    } catch (_) {}
+    return imageData;
   };
 
   HTMLCanvasElement.prototype.toDataURL = function (type, quality) {
