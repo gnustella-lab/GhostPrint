@@ -1,31 +1,35 @@
 'use strict';
 
-// DEFAULT_SETTINGS comes from settings.js (loaded first in popup.html).
-
-// The five fields EFF's Cover Your Tracks checks for cross-domain
-// randomization. If ≥ 4 of these differ between first-party domains,
-// the EFF result becomes "your browser has a randomized fingerprint".
 const EFF_FIELDS = [
-  { icon: '🔊', label: 'AudioContext'        },
-  { icon: '🖼️', label: 'Canvas hash'         },
-  { icon: '🎮', label: 'WebGL hash'          },
-  { icon: '🧩', label: 'Plugins'             },
+  { icon: '🔊', label: 'AudioContext' },
+  { icon: '🖼️', label: 'Canvas hash' },
+  { icon: '🎮', label: 'WebGL hash' },
+  { icon: '🧩', label: 'Plugins / MIME types' },
   { icon: '⚙️', label: 'Hardware concurrency' },
 ];
 
-let currentSettings = null;
+let currentSettings = cloneDefaultSettings();
 
-async function loadSettings() {
-  const r = await browser.storage.local.get('settings');
-  if (!r.settings) {
-    await browser.storage.local.set({ settings: DEFAULT_SETTINGS });
-    return { ...DEFAULT_SETTINGS };
+async function requestSettings(type, settings) {
+  const message = { type };
+  if (settings !== undefined) message.settings = settings;
+  const response = await browser.runtime.sendMessage(message);
+  if (!response || response.ok !== true) {
+    throw new Error(response && response.error ? response.error : 'settings-request-failed');
   }
-  return { ...DEFAULT_SETTINGS, ...r.settings };
+  return response.settings ? normalizeSettings(response.settings) : cloneDefaultSettings();
 }
 
-async function saveSettings(s) {
-  await browser.storage.local.set({ settings: s });
+async function loadSettings() {
+  return requestSettings('GET_SETTINGS');
+}
+
+async function saveSettings(settings) {
+  return requestSettings('SET_SETTINGS', settings);
+}
+
+async function resetSettings() {
+  return requestSettings('RESET_SETTINGS');
 }
 
 async function renderSeed() {
@@ -34,41 +38,38 @@ async function renderSeed() {
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const tab = tabs && tabs[0];
     if (!tab || tab.id === undefined) throw new Error('no active tab');
-    // Target the top frame explicitly instead of relying on every frame's
-    // listener gating on sender.frameId — more robust across engine forks.
     const seed = await browser.tabs.sendMessage(tab.id, { type: 'GET_SEED' }, { frameId: 0 });
     el.textContent = (seed === undefined || seed === null)
-      ? '—'
+      ? '— indisponível'
       : '0x' + (seed >>> 0).toString(16).toUpperCase().padStart(8, '0');
   } catch (err) {
-    // No content script on this page (about:, chrome://, or the page was
-    // opened before the extension was loaded) or the message failed.
-    // Log the real error so the popup console (right-click → Inspect) shows
-    // what happened instead of a silent "—".
     console.error('GhostPrint: could not read seed of active tab:', err);
-    el.textContent = '— reload the page';
+    el.textContent = '— recarregue a página';
   }
 }
 
 function renderStatus(enabled) {
   const banner = document.getElementById('statusBanner');
-  const icon   = document.getElementById('statusIcon');
-  const text   = document.getElementById('statusText');
-  if (enabled) {
-    banner.className = 'status-banner active';
-    icon.textContent  = '🛡️';
-    text.textContent  = 'Randomizing';
-  } else {
-    banner.className = 'status-banner inactive';
-    icon.textContent  = '⚠️';
-    text.textContent  = 'Disabled — reload pages';
-  }
+  const icon = document.getElementById('statusIcon');
+  const text = document.getElementById('statusText');
+  banner.className = enabled ? 'status-banner active' : 'status-banner inactive';
+  icon.textContent = enabled ? '🛡️' : '⚠️';
+  text.textContent = enabled ? 'Randomizando, recarregue as páginas' : 'Desativado, recarregue as páginas';
+}
+
+function renderError(message) {
+  const banner = document.getElementById('statusBanner');
+  const icon = document.getElementById('statusIcon');
+  const text = document.getElementById('statusText');
+  banner.className = 'status-banner error';
+  icon.textContent = '⚠️';
+  text.textContent = message;
 }
 
 function renderFields(enabled) {
   const list = document.getElementById('protectionsList');
-  list.innerHTML = '';
-  for (const f of EFF_FIELDS) {
+  list.replaceChildren();
+  for (const field of EFF_FIELDS) {
     const row = document.createElement('div');
     row.className = 'protection-row ' + (enabled ? 'on' : 'off');
 
@@ -77,17 +78,19 @@ function renderFields(enabled) {
 
     const icon = document.createElement('span');
     icon.className = 'protection-icon';
-    icon.textContent = f.icon;
+    icon.textContent = field.icon;
+    icon.setAttribute('aria-hidden', 'true');
 
     const name = document.createElement('span');
     name.className = 'protection-name';
-    name.textContent = f.label;
+    name.textContent = field.label;
 
     left.appendChild(icon);
     left.appendChild(name);
 
     const dot = document.createElement('div');
     dot.className = 'protection-dot';
+    dot.setAttribute('aria-hidden', 'true');
 
     row.appendChild(left);
     row.appendChild(dot);
@@ -95,29 +98,65 @@ function renderFields(enabled) {
   }
 }
 
-async function init() {
-  currentSettings = await loadSettings();
-
+function bindControls() {
   const toggle = document.getElementById('globalToggle');
-  toggle.checked = currentSettings.enabled;
+  const resetButton = document.getElementById('resetBtn');
+
   toggle.addEventListener('change', async () => {
-    currentSettings.enabled = toggle.checked;
-    await saveSettings(currentSettings);
-    renderStatus(currentSettings.enabled);
-    renderFields(currentSettings.enabled);
+    const requested = toggle.checked;
+    toggle.disabled = true;
+    try {
+      currentSettings = await saveSettings({ enabled: requested });
+      toggle.checked = currentSettings.enabled;
+      renderStatus(currentSettings.enabled);
+      renderFields(currentSettings.enabled);
+    } catch (err) {
+      console.error('GhostPrint: could not save settings:', err);
+      toggle.checked = currentSettings.enabled;
+      renderError('Não foi possível salvar a configuração');
+    } finally {
+      toggle.disabled = false;
+    }
   });
 
-  document.getElementById('resetBtn').addEventListener('click', async () => {
-    currentSettings = { ...DEFAULT_SETTINGS };
-    await saveSettings(currentSettings);
-    toggle.checked = currentSettings.enabled;
-    renderStatus(currentSettings.enabled);
-    renderFields(currentSettings.enabled);
+  resetButton.addEventListener('click', async () => {
+    resetButton.disabled = true;
+    try {
+      currentSettings = await resetSettings();
+      toggle.checked = currentSettings.enabled;
+      renderStatus(currentSettings.enabled);
+      renderFields(currentSettings.enabled);
+    } catch (err) {
+      console.error('GhostPrint: could not reset settings:', err);
+      renderError('Não foi possível restaurar os padrões');
+    } finally {
+      resetButton.disabled = false;
+    }
   });
-
-  renderStatus(currentSettings.enabled);
-  renderFields(currentSettings.enabled);
-  renderSeed();
 }
 
-document.addEventListener('DOMContentLoaded', init);
+async function init() {
+  const toggle = document.getElementById('globalToggle');
+  try {
+    currentSettings = await loadSettings();
+  } catch (err) {
+    console.error('GhostPrint: could not load settings:', err);
+    currentSettings = cloneDefaultSettings();
+    renderError('Não foi possível carregar a configuração');
+  }
+
+  toggle.checked = currentSettings.enabled;
+  bindControls();
+  renderFields(currentSettings.enabled);
+  if (document.getElementById('statusBanner').classList.contains('error') === false) {
+    renderStatus(currentSettings.enabled);
+  }
+  void renderSeed();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  void init().catch((err) => {
+    console.error('GhostPrint: popup initialization failed:', err);
+    renderError('Falha ao inicializar o popup');
+  });
+});

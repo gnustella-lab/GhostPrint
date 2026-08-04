@@ -36,23 +36,52 @@
 (function () {
   'use strict';
 
-  const STORAGE_KEY = '__ghostprint_seed_v1__'; // must match content.js
+  const STORAGE_KEY = '__ghostprint_seed_v1__'; // must match seed.js/content.js
+  const SEED_MIN = 1;
+  const SEED_MAX = 0xFFFFFFFE;
+  const MAX_CRYPTO_ATTEMPTS = 8;
 
-  let SEED;
-  try {
-    const stored = sessionStorage.getItem(STORAGE_KEY);
-    const parsed = parseInt(stored, 10);
-    if (Number.isInteger(parsed) && parsed > 0 && parsed <= 0xFFFFFFFF) {
-      SEED = parsed >>> 0;
-    } else {
-      SEED = ((Math.random() * 0xFFFFFFFE) + 1) >>> 0;
-      // Write back so content.js (popup display) and inject.js agree on the
-      // seed even if a page tampered with the key between the two loads.
-      try { sessionStorage.setItem(STORAGE_KEY, String(SEED)); } catch (e) {}
-    }
-  } catch (e) {
-    SEED = ((Math.random() * 0xFFFFFFFE) + 1) >>> 0;
+  function parsePageSeed(value) {
+    if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) return null;
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < SEED_MIN || parsed > SEED_MAX) return null;
+    return parsed;
   }
+
+  function generatePageSeed(cryptoSource) {
+    if (!cryptoSource || typeof cryptoSource.getRandomValues !== 'function') return null;
+    const values = new Uint32Array(1);
+    for (let attempt = 0; attempt < MAX_CRYPTO_ATTEMPTS; attempt += 1) {
+      try {
+        cryptoSource.getRandomValues(values);
+      } catch (_) {
+        return null;
+      }
+      const candidate = values[0] >>> 0;
+      if (candidate >= SEED_MIN && candidate <= SEED_MAX) return candidate;
+    }
+    return null;
+  }
+
+  let SEED = null;
+  try {
+    const stored = parsePageSeed(sessionStorage.getItem(STORAGE_KEY));
+    if (stored !== null) {
+      SEED = stored;
+    } else {
+      const generated = generatePageSeed(typeof crypto !== 'undefined' ? crypto : null);
+      if (generated !== null) {
+        sessionStorage.setItem(STORAGE_KEY, String(generated));
+        if (parsePageSeed(sessionStorage.getItem(STORAGE_KEY)) === generated) {
+          SEED = generated;
+        }
+      }
+    }
+  } catch (_) {}
+
+  // Without a verified seed, do not install hooks that would disagree with
+  // the content script or collapse all origins to a shared fallback.
+  if (SEED === null) return;
 
   // ─── Deterministic 32-bit hash mixer ─────────────────────────────────────
   // Stateless. Same args + same SEED → same output, always.

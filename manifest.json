@@ -15,7 +15,7 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*"],
-      "js": ["settings.js", "content.js"],
+      "js": ["settings.js", "seed.js", "content.js"],
       "run_at": "document_start",
       "all_frames": true
     }
