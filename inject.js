@@ -200,27 +200,47 @@
   // (4 bytes/pixel) the nudge loop assumes. Other format/type combos (e.g.
   // RGB with 3 bytes/pixel, or float buffers) are left untouched so a ±1
   // nudge can't misalign and corrupt legitimate reads.
+  const patchedWebGLContexts = new WeakSet();
+
+  function patchWebGLContext(ctx) {
+    if (patchedWebGLContexts.has(ctx) || !ctx || typeof ctx.readPixels !== 'function') return;
+
+    const originalReadPixels = ctx.readPixels;
+    const patchedReadPixels = function () {
+      const args = arguments;
+      Reflect.apply(originalReadPixels, this, args);
+
+      const width = args[2];
+      const height = args[3];
+      const format = args[4];
+      const type = args[5];
+      const pixels = args[6];
+      // WebGL contexts always define these constants (spec); no fallbacks needed.
+      const isRGBA = format === ctx.RGBA;
+      const isUint8 = type === ctx.UNSIGNED_BYTE;
+      if (pixels && isRGBA && isUint8 &&
+          (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray)) {
+        for (let i = 0; i + 3 < pixels.length; i += 4) {
+          const hash = mix(i, width, height, pixels[i], pixels[i + 1], pixels[i + 2]);
+          if ((hash & 0x1f) === 0) {
+            pixels[i]     = clampByte(pixels[i]     + ((hash >>> 5)  % 3) - 1);
+            pixels[i + 1] = clampByte(pixels[i + 1] + ((hash >>> 11) % 3) - 1);
+            pixels[i + 2] = clampByte(pixels[i + 2] + ((hash >>> 17) % 3) - 1);
+          }
+        }
+      }
+    };
+
+    try {
+      ctx.readPixels = patchedReadPixels;
+      patchedWebGLContexts.add(ctx);
+    } catch (_) {}
+  }
+
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
     const ctx = origGetContext.call(this, type, attrs);
     if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
-      const origReadPixels = ctx.readPixels.bind(ctx);
-      ctx.readPixels = function (x, y, w, h, format, t, pixels) {
-        origReadPixels(x, y, w, h, format, t, pixels);
-        // WebGL contexts always define these constants (spec); no fallbacks needed.
-        const isRGBA = format === ctx.RGBA;
-        const isUint8 = t === ctx.UNSIGNED_BYTE;
-        if (pixels && isRGBA && isUint8 &&
-            (pixels instanceof Uint8Array || pixels instanceof Uint8ClampedArray)) {
-          for (let i = 0; i + 3 < pixels.length; i += 4) {
-            const hash = mix(i, w, h, pixels[i], pixels[i + 1], pixels[i + 2]);
-            if ((hash & 0x1f) === 0) {
-              pixels[i]     = clampByte(pixels[i]     + ((hash >>> 5)  % 3) - 1);
-              pixels[i + 1] = clampByte(pixels[i + 1] + ((hash >>> 11) % 3) - 1);
-              pixels[i + 2] = clampByte(pixels[i + 2] + ((hash >>> 17) % 3) - 1);
-            }
-          }
-        }
-      };
+      patchWebGLContext(ctx);
     }
     return ctx;
   };

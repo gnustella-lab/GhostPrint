@@ -1,0 +1,14 @@
+{
+  "name": "ghostprint",
+  "version": "1.0.1",
+  "private": true,
+  "description": "Development tooling for the GhostPrint Firefox extension",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check settings.js && node --check background.js && node --check content.js && node --check popup.js && node --check inject.js",
+    "lint": "web-ext lint --source-dir . --no-config-discovery"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
