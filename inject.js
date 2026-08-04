@@ -292,61 +292,199 @@
   };
 
   // ─── AUDIO ───────────────────────────────────────────────────────────────
-  // OfflineAudioContext rendering is deterministic, so we can apply
-  // value-dependent noise safely. Per-channel cache ensures repeated reads
-  // of the same buffer return identical samples.
+  // Protect each available read surface independently. AudioBuffer samples are
+  // farbled in place only after the native read succeeds, so
+  // getChannelData/copyFromChannel observe the same stable view.
   const OfflineAudioCtxClass = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  const AudioBufferClass = window.AudioBuffer;
+  const AnalyserNodeClass = window.AnalyserNode;
+  const audioBufferStates = new WeakMap();
+  const patchedAnalyserNodes = new WeakSet();
 
-  function farbleAudioBuffer(buf) {
-    if (!buf) return buf;
-    const cache = new Map();
-    const origGetChannelData = buf.getChannelData.bind(buf);
-    buf.getChannelData = function (ch) {
-      if (cache.has(ch)) return cache.get(ch);
-      const data = origGetChannelData(ch);
-      for (let i = 0; i < data.length; i++) {
-        const h = mix(ch, i);
-        if ((h & 0xff) < 8) {
-          data[i] += ((h / 0x100000000) - 0.5) * 1e-4;
-        }
+  function getAudioBufferState(buffer) {
+    let state = audioBufferStates.get(buffer);
+    if (!state) {
+      state = { farbledChannels: new Set() };
+      audioBufferStates.set(buffer, state);
+    }
+    return state;
+  }
+
+  function farbleAudioRange(data, channel, start, end) {
+    if (!(data instanceof Float32Array)) return;
+    const first = Math.max(0, toInteger(start));
+    const last = Math.min(data.length, Math.max(first, toInteger(end)));
+    for (let i = first; i < last; i += 1) {
+      const value = data[i];
+      if (!Number.isFinite(value)) continue;
+      const h = mix(0xA710, channel, i);
+      if ((h & 0xff) < 8) {
+        data[i] = value + ((h / 0x100000000) - 0.5) * 1e-4;
       }
-      cache.set(ch, data);
-      return data;
-    };
-    return buf;
+    }
   }
 
-  if (OfflineAudioCtxClass) {
-    const origStartRendering = OfflineAudioCtxClass.prototype.startRendering;
-    OfflineAudioCtxClass.prototype.startRendering = function () {
-      return origStartRendering.call(this).then(farbleAudioBuffer);
-    };
+  function farbleWholeAudioChannel(buffer, state, originalGetChannelData, channel) {
+    if (state.farbledChannels.has(channel)) return null;
+    const data = Reflect.apply(originalGetChannelData, buffer, [channel]);
+    farbleAudioRange(data, channel, 0, data.length);
+    state.farbledChannels.add(channel);
+    return data;
   }
 
-  if (AudioCtxClass) {
-    const origCreateAnalyser = AudioCtxClass.prototype.createAnalyser;
-    AudioCtxClass.prototype.createAnalyser = function () {
-      const an = origCreateAnalyser.call(this);
-      const origFloat = an.getFloatFrequencyData.bind(an);
-      const origByte = an.getByteFrequencyData.bind(an);
-      an.getFloatFrequencyData = function (arr) {
-        origFloat(arr);
-        for (let i = 0; i < arr.length; i++) {
-          const h = mix(i);
-          if (arr[i] > -Infinity) arr[i] += ((h / 0x100000000) - 0.5) * 1e-4;
-        }
-      };
-      an.getByteFrequencyData = function (arr) {
-        origByte(arr);
-        for (let i = 0; i < arr.length; i++) {
-          const h = mix(i);
-          if ((h & 0xff) < 32) {
-            arr[i] = Math.max(0, Math.min(255, arr[i] + ((h >>> 8) % 3) - 1));
+  function patchAudioBufferPrototype() {
+    if (!AudioBufferClass || !AudioBufferClass.prototype) return;
+    const proto = AudioBufferClass.prototype;
+    const originalGetChannelData = typeof proto.getChannelData === 'function'
+      ? proto.getChannelData
+      : null;
+    const originalCopyFromChannel = typeof proto.copyFromChannel === 'function'
+      ? proto.copyFromChannel
+      : null;
+    const originalCopyToChannel = typeof proto.copyToChannel === 'function'
+      ? proto.copyToChannel
+      : null;
+
+    if (originalGetChannelData) {
+      proto.getChannelData = function () {
+        const data = Reflect.apply(originalGetChannelData, this, arguments);
+        try {
+          const state = getAudioBufferState(this);
+          const channel = toInteger(arguments[0]);
+          if (!state.farbledChannels.has(channel)) {
+            farbleAudioRange(data, channel, 0, data.length);
+            state.farbledChannels.add(channel);
           }
-        }
+        } catch (_) {}
+        return data;
       };
-      return an;
+    }
+
+    if (originalCopyFromChannel) {
+      proto.copyFromChannel = function () {
+        const result = Reflect.apply(originalCopyFromChannel, this, arguments);
+        try {
+          const destination = arguments[0];
+          const channel = toInteger(arguments[1]);
+          const start = toInteger(arguments[2]);
+          const state = getAudioBufferState(this);
+          let sourceData = null;
+          if (originalGetChannelData) {
+            sourceData = farbleWholeAudioChannel(this, state, originalGetChannelData, channel);
+            if (!sourceData) sourceData = Reflect.apply(originalGetChannelData, this, [channel]);
+            if (destination && typeof destination.length === 'number' && sourceData) {
+              const count = Math.min(destination.length, sourceData.length - start);
+              for (let i = 0; i < count; i += 1) destination[i] = sourceData[start + i];
+            }
+          } else {
+            farbleAudioRange(destination, channel, start, start + (destination ? destination.length : 0));
+          }
+        } catch (_) {}
+        return result;
+      };
+    }
+
+    if (originalCopyToChannel && originalGetChannelData) {
+      proto.copyToChannel = function () {
+        const result = Reflect.apply(originalCopyToChannel, this, arguments);
+        try {
+          const source = arguments[0];
+          const channel = toInteger(arguments[1]);
+          const start = toInteger(arguments[2]);
+          const state = getAudioBufferState(this);
+          const data = Reflect.apply(originalGetChannelData, this, [channel]);
+          if (state.farbledChannels.has(channel)) {
+            farbleAudioRange(data, channel, start, start + (source ? source.length : 0));
+          } else {
+            farbleAudioRange(data, channel, 0, data.length);
+            state.farbledChannels.add(channel);
+          }
+        } catch (_) {}
+        return result;
+      };
+    }
+  }
+
+  function farbleAnalyserArray(node, array, kind, tag) {
+    if (!array || typeof array.length !== 'number') return;
+    const limitValue = toInteger(node && node.frequencyBinCount);
+    const limit = Math.min(array.length, limitValue > 0 ? limitValue : array.length);
+    const isFloat = kind === 'float';
+    if (isFloat && !(array instanceof Float32Array)) return;
+    if (!isFloat && !(array instanceof Uint8Array)) return;
+
+    for (let i = 0; i < limit; i += 1) {
+      const value = array[i];
+      if (isFloat) {
+        if (!Number.isFinite(value)) continue;
+        const h = mix(0xA711, tag, i);
+        if ((h & 0xff) < 8) array[i] = value + ((h / 0x100000000) - 0.5) * 1e-4;
+      } else {
+        const h = mix(0xA712, tag, i);
+        if ((h & 0xff) < 32) array[i] = Math.max(0, Math.min(255, value + ((h >>> 8) % 3) - 1));
+      }
+    }
+  }
+
+  function patchAnalyserMethods(proto) {
+    if (!proto) return false;
+    const methods = [
+      ['getFloatFrequencyData', 'float', 1],
+      ['getByteFrequencyData', 'byte', 2],
+      ['getFloatTimeDomainData', 'float', 3],
+      ['getByteTimeDomainData', 'byte', 4],
+    ];
+    let installed = false;
+    for (const [name, kind, tag] of methods) {
+      const original = typeof proto[name] === 'function' ? proto[name] : null;
+      if (!original) continue;
+      proto[name] = function () {
+        const result = Reflect.apply(original, this, arguments);
+        try { farbleAnalyserArray(this, arguments[0], kind, tag); } catch (_) {}
+        return result;
+      };
+      installed = true;
+    }
+    return installed;
+  }
+
+  function patchAnalyserInstance(analyser) {
+    if (!analyser || patchedAnalyserNodes.has(analyser)) return analyser;
+    patchedAnalyserNodes.add(analyser);
+    const methods = [
+      ['getFloatFrequencyData', 'float', 1],
+      ['getByteFrequencyData', 'byte', 2],
+      ['getFloatTimeDomainData', 'float', 3],
+      ['getByteTimeDomainData', 'byte', 4],
+    ];
+    for (const [name, kind, tag] of methods) {
+      const original = typeof analyser[name] === 'function' ? analyser[name] : null;
+      if (!original) continue;
+      analyser[name] = function () {
+        const result = Reflect.apply(original, this, arguments);
+        try { farbleAnalyserArray(this, arguments[0], kind, tag); } catch (_) {}
+        return result;
+      };
+    }
+    return analyser;
+  }
+
+  patchAudioBufferPrototype();
+
+  if (OfflineAudioCtxClass && typeof OfflineAudioCtxClass.prototype.startRendering === 'function') {
+    const originalStartRendering = OfflineAudioCtxClass.prototype.startRendering;
+    OfflineAudioCtxClass.prototype.startRendering = function () {
+      return Reflect.apply(originalStartRendering, this, arguments);
+    };
+  }
+
+  if (AnalyserNodeClass && AnalyserNodeClass.prototype) {
+    patchAnalyserMethods(AnalyserNodeClass.prototype);
+  } else if (AudioCtxClass && typeof AudioCtxClass.prototype.createAnalyser === 'function') {
+    const originalCreateAnalyser = AudioCtxClass.prototype.createAnalyser;
+    AudioCtxClass.prototype.createAnalyser = function () {
+      return patchAnalyserInstance(Reflect.apply(originalCreateAnalyser, this, arguments));
     };
   }
 
