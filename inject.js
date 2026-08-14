@@ -351,113 +351,389 @@
     if (installationRegistry.installers.webgl) {
       return { installed: true, reason: 'already-installed' };
     }
-    const CanvasElementClass = typeof HTMLCanvasElement !== 'undefined'
-      ? HTMLCanvasElement
-      : null;
-    if (!CanvasElementClass || typeof CanvasElementClass.prototype.getContext !== 'function') {
+    const contextSources = [];
+    if (typeof HTMLCanvasElement !== 'undefined' &&
+        typeof HTMLCanvasElement.prototype.getContext === 'function') {
+      contextSources.push(HTMLCanvasElement);
+    }
+    if (typeof OffscreenCanvas !== 'undefined' &&
+        typeof OffscreenCanvas.prototype.getContext === 'function') {
+      contextSources.push(OffscreenCanvas);
+    }
+    const webglClasses = [];
+    if (typeof WebGLRenderingContext !== 'undefined') webglClasses.push(WebGLRenderingContext);
+    if (typeof WebGL2RenderingContext !== 'undefined') webglClasses.push(WebGL2RenderingContext);
+    if (contextSources.length === 0 && webglClasses.length === 0) {
       return { installed: false, reason: 'api-unavailable' };
     }
-    const origGetContext = CanvasElementClass.prototype.getContext;
     const patchedWebGLContexts = installationRegistry.patchedWebGLContexts;
+    const webglContextStates = new WeakMap();
+    const patchedWebGLPrototypes = new WeakSet();
+    const SYNTHETIC_EXTENSION_PARTS = Object.freeze({
+      subjects: Object.freeze(['surface', 'raster', 'frame', 'pixel', 'shader', 'buffer', 'vector']),
+      roles: Object.freeze(['pipeline', 'resolver', 'allocator']),
+    });
 
-  function patchWebGLContext(ctx) {
-    if (patchedWebGLContexts.has(ctx) || !ctx || typeof ctx.readPixels !== 'function') return;
-
-    const DEBUG_RENDERER_EXTENSION = 'WEBGL_debug_renderer_info';
-    const UNMASKED_VENDOR_WEBGL = 0x9245;
-    const UNMASKED_RENDERER_WEBGL = 0x9246;
-    const originalReadPixels = ctx.readPixels;
-    const patchedReadPixels = function () {
-      const args = arguments;
-      Reflect.apply(originalReadPixels, this, args);
-
-      const width = toInteger(args[2]);
-      const height = toInteger(args[3]);
-      const format = args[4];
-      const type = args[5];
-      const pixels = args[6];
-      // WebGL 2 also accepts a numeric PBO offset in args[6]. Only typed-array
-      // reads expose bytes that this wrapper can safely post-process.
-      const dstOffset = typeof args[7] === 'number' ? toInteger(args[7]) : 0;
-      const byteCount = width > 0 && height > 0 ? width * height * 4 : 0;
-      const start = Math.max(0, dstOffset);
-      const end = Math.min(pixels && pixels.length, start + byteCount);
-      // WebGL contexts always define these constants (spec); no fallbacks needed.
-      const isRGBA = format === ctx.RGBA;
-      const isUint8 = type === ctx.UNSIGNED_BYTE;
-      if (byteCount > 0 && pixels && isRGBA && isUint8 &&
-          (isTypedArray(pixels, 'Uint8Array') || isTypedArray(pixels, 'Uint8ClampedArray'))) {
-        for (let i = start; i + 3 < end; i += 4) {
-          const pixelIndex = i - start;
-          const hash = mix(pixelIndex, width, height, pixels[i], pixels[i + 1], pixels[i + 2]);
-          if ((hash & 0x1f) === 0) {
-            pixels[i]     = clampByte(pixels[i]     + ((hash >>> 5)  % 3) - 1);
-            pixels[i + 1] = clampByte(pixels[i + 1] + ((hash >>> 11) % 3) - 1);
-            pixels[i + 2] = clampByte(pixels[i + 2] + ((hash >>> 17) % 3) - 1);
-          }
-        }
+  function syntheticExtensionPool() {
+    const pool = [];
+    for (const subject of SYNTHETIC_EXTENSION_PARTS.subjects) {
+      for (const role of SYNTHETIC_EXTENSION_PARTS.roles) {
+        const name = `EXT_${subject}_${role}`;
+        const objectName = name
+          .toLowerCase()
+          .split('_')
+          .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+          .join('');
+        pool.push({ name, objectName });
       }
-    };
+    }
+    return pool;
+  }
 
-    // Mark before assignment: if a browser exposes a non-writable native
-    // method, a later getContext call must not stack another readPixels wrapper
-    // over the partially patched context.
-    patchedWebGLContexts.add(ctx);
-    try {
-      ctx.readPixels = patchedReadPixels;
-    } catch (_) {}
+  const SYNTHETIC_EXTENSIONS = Object.freeze(syntheticExtensionPool());
 
-    const originalGetExtension = typeof ctx.getExtension === 'function'
-      ? ctx.getExtension
-      : null;
-    if (originalGetExtension) {
+  function createSyntheticExtensionObject(objectName) {
+    const extension = {};
+    if (typeof Symbol === 'function' && Symbol.toStringTag) {
       try {
-        ctx.getExtension = function () {
-          if (arguments[0] === DEBUG_RENDERER_EXTENSION) return null;
-          return Reflect.apply(originalGetExtension, this, arguments);
-        };
+        Object.defineProperty(extension, Symbol.toStringTag, {
+          value: objectName,
+          configurable: false,
+          enumerable: false,
+          writable: false,
+        });
       } catch (_) {}
     }
+    return extension;
+  }
 
-    const originalGetSupportedExtensions = typeof ctx.getSupportedExtensions === 'function'
-      ? ctx.getSupportedExtensions
-      : null;
-    if (originalGetSupportedExtensions) {
-      try {
-        ctx.getSupportedExtensions = function () {
-          const extensions = Reflect.apply(originalGetSupportedExtensions, this, arguments);
-          if (!Array.isArray(extensions)) return extensions;
-          return extensions.filter((name) => name !== DEBUG_RENDERER_EXTENSION);
-        };
-      } catch (_) {}
+  function getWebGLContextState(ctx) {
+    let state = webglContextStates.get(ctx);
+    if (!state) {
+      state = {
+        syntheticExtension: null,
+        syntheticExtensionObject: null,
+        supportedExtensions: null,
+      };
+      webglContextStates.set(ctx, state);
     }
+    return state;
+  }
 
-    const originalGetParameter = typeof ctx.getParameter === 'function'
-      ? ctx.getParameter
-      : null;
-    if (originalGetParameter) {
-      try {
-        ctx.getParameter = function () {
-          const parameter = arguments[0];
-          if (parameter === UNMASKED_VENDOR_WEBGL || parameter === UNMASKED_RENDERER_WEBGL) {
-            return null;
-          }
-          return Reflect.apply(originalGetParameter, this, arguments);
-        };
-      } catch (_) {}
+  function cacheSyntheticExtension(state, realExtensions) {
+    if (state.syntheticExtension) return true;
+    if (!Array.isArray(realExtensions)) return false;
+
+    const realNames = new Set(realExtensions.map((name) => String(name).toLowerCase()));
+    const start = mix(0x57454247) % SYNTHETIC_EXTENSIONS.length;
+    for (let offset = 0; offset < SYNTHETIC_EXTENSIONS.length; offset += 1) {
+      const candidate = SYNTHETIC_EXTENSIONS[(start + offset) % SYNTHETIC_EXTENSIONS.length];
+      if (!realNames.has(candidate.name.toLowerCase())) {
+        state.syntheticExtension = candidate;
+        state.syntheticExtensionObject = createSyntheticExtensionObject(candidate.objectName);
+        state.supportedExtensions = realExtensions.concat(candidate.name);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function farbleWebGLReadPixels(ctx, args) {
+    const width = toInteger(args[2]);
+    const height = toInteger(args[3]);
+    const format = args[4];
+    const type = args[5];
+    const pixels = args[6];
+    // WebGL 2 also accepts a numeric PBO offset in args[6]. Only typed-array
+    // reads expose bytes that this wrapper can safely post-process.
+    const dstOffset = typeof args[7] === 'number' ? toInteger(args[7]) : 0;
+    const byteCount = width > 0 && height > 0 ? width * height * 4 : 0;
+    const start = Math.max(0, dstOffset);
+    const end = Math.min(pixels && pixels.length, start + byteCount);
+    if (byteCount <= 0 || !pixels || format !== ctx.RGBA || type !== ctx.UNSIGNED_BYTE ||
+        (!isTypedArray(pixels, 'Uint8Array') && !isTypedArray(pixels, 'Uint8ClampedArray'))) {
+      return;
+    }
+    for (let i = start; i + 3 < end; i += 4) {
+      const pixelIndex = i - start;
+      const hash = mix(pixelIndex, width, height, pixels[i], pixels[i + 1], pixels[i + 2]);
+      if ((hash & 0x1f) === 0) {
+        pixels[i] = clampByte(pixels[i] + ((hash >>> 5) % 3) - 1);
+        pixels[i + 1] = clampByte(pixels[i + 1] + ((hash >>> 11) % 3) - 1);
+        pixels[i + 2] = clampByte(pixels[i + 2] + ((hash >>> 17) % 3) - 1);
+      }
     }
   }
 
-    CanvasElementClass.prototype.getContext = function () {
-      const type = arguments[0];
-      const ctx = Reflect.apply(origGetContext, this, arguments);
-      if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
-        patchWebGLContext(ctx);
+  function replaceMethod(target, name, applyTrap) {
+    let descriptor = Object.getOwnPropertyDescriptor(target, name);
+    let owner = target;
+    while (!descriptor && owner) {
+      owner = Object.getPrototypeOf(owner);
+      if (owner) descriptor = Object.getOwnPropertyDescriptor(owner, name);
+    }
+    const original = descriptor && typeof descriptor.value === 'function'
+      ? descriptor.value
+      : null;
+    if (!original) return false;
+    const replacement = typeof Proxy === 'function'
+      ? new Proxy(original, { apply: applyTrap })
+      : function () { return applyTrap(original, this, Array.from(arguments)); };
+    try {
+      Object.defineProperty(target, name, { ...descriptor, value: replacement });
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function patchWebGLPrototype(proto) {
+    if (!proto || patchedWebGLPrototypes.has(proto)) return false;
+    const nativeGetSupportedExtensions = typeof proto.getSupportedExtensions === 'function'
+      ? proto.getSupportedExtensions
+      : null;
+    if (!nativeGetSupportedExtensions || typeof proto.getExtension !== 'function') return false;
+    const methodNames = ['readPixels', 'getParameter', 'getSupportedExtensions', 'getExtension'];
+    const originalDescriptors = new Map(
+      methodNames.map((name) => [name, Object.getOwnPropertyDescriptor(proto, name)]),
+    );
+
+    const installedMethods = [];
+    installedMethods.push(replaceMethod(proto, 'readPixels', (target, thisArg, args) => {
+      const result = Reflect.apply(target, thisArg, args);
+      farbleWebGLReadPixels(thisArg, args);
+      return result;
+    }));
+    installedMethods.push(replaceMethod(proto, 'getParameter', (target, thisArg, args) => {
+      const value = Reflect.apply(target, thisArg, args);
+      const parameter = args[0];
+      if (parameter === 0x1F00 || parameter === 0x1F01) return 'Mozilla';
+      if ((parameter === 0x9245 || parameter === 0x9246) && value !== null) return 'Mozilla';
+      return value;
+    }));
+    installedMethods.push(replaceMethod(
+      proto,
+      'getSupportedExtensions',
+      (target, thisArg, args) => {
+        const realExtensions = Reflect.apply(target, thisArg, args);
+        if (!Array.isArray(realExtensions)) return realExtensions;
+        const state = getWebGLContextState(thisArg);
+        cacheSyntheticExtension(state, realExtensions);
+        return state.supportedExtensions ? state.supportedExtensions.slice() : realExtensions.slice();
+      },
+    ));
+    installedMethods.push(replaceMethod(proto, 'getExtension', (target, thisArg, args) => {
+      const state = getWebGLContextState(thisArg);
+      if (!state.syntheticExtension) {
+        const realExtensions = Reflect.apply(nativeGetSupportedExtensions, thisArg, []);
+        cacheSyntheticExtension(state, realExtensions);
       }
-      return ctx;
-    };
+      const requestedName = '' + args[0];
+      if (state.syntheticExtension &&
+          requestedName.toLowerCase() === state.syntheticExtension.name.toLowerCase()) {
+        return state.syntheticExtensionObject;
+      }
+      return Reflect.apply(target, thisArg, args);
+    }));
+    if (installedMethods.some((installed) => !installed)) {
+      for (const name of methodNames) {
+        const descriptor = originalDescriptors.get(name);
+        try {
+          if (descriptor) Object.defineProperty(proto, name, descriptor);
+          else delete proto[name];
+        } catch (_) {}
+      }
+      return false;
+    }
+    patchedWebGLPrototypes.add(proto);
+    return true;
+  }
+
+  for (const WebGLClass of webglClasses) patchWebGLPrototype(WebGLClass.prototype);
+
+  function contextUsesPatchedPrototype(ctx) {
+    for (const WebGLClass of webglClasses) {
+      try {
+        if (ctx instanceof WebGLClass && patchedWebGLPrototypes.has(WebGLClass.prototype)) return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
+  function patchWebGLContext(ctx) {
+    if (patchedWebGLContexts.has(ctx) || !ctx || typeof ctx.readPixels !== 'function') return;
+    patchedWebGLContexts.add(ctx);
+    getWebGLContextState(ctx);
+    if (contextUsesPatchedPrototype(ctx)) return;
+    patchWebGLPrototype(ctx);
+  }
+
+    for (const ContextSource of contextSources) {
+      const originalGetContext = ContextSource.prototype.getContext;
+      ContextSource.prototype.getContext = function () {
+        const type = arguments[0];
+        const ctx = Reflect.apply(originalGetContext, this, arguments);
+        if (ctx && (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2')) {
+          patchWebGLContext(ctx);
+        }
+        return ctx;
+      };
+    }
 
     installationRegistry.installers.webgl = true;
+    return { installed: true };
+  }
+
+  // ─── WEBGPU ──────────────────────────────────────────────────────────────
+  // Brave 1.93 empties the three stable hardware identifiers that ship in
+  // GPUAdapterInfo. Keep adapter/device capabilities and methods untouched.
+  function installWebGPUProtection() {
+    if (installationRegistry.installers.webgpu) {
+      return { installed: true, reason: 'already-installed' };
+    }
+
+    const GPUAdapterInfoClass = typeof GPUAdapterInfo !== 'undefined' ? GPUAdapterInfo : null;
+    const GPUAdapterClass = typeof GPUAdapter !== 'undefined' ? GPUAdapter : null;
+    const GPUDeviceClass = typeof GPUDevice !== 'undefined' ? GPUDevice : null;
+    let gpuObject = null;
+    try {
+      gpuObject = typeof navigator !== 'undefined' ? navigator.gpu : null;
+    } catch (_) {}
+    if (!GPUAdapterInfoClass && !GPUAdapterClass && !GPUDeviceClass && !gpuObject) {
+      return { installed: false, reason: 'api-unavailable' };
+    }
+
+    const protectedInfoObjects = new WeakMap();
+    const protectedAdapterPrototypes = new WeakSet();
+    const protectedDevicePrototypes = new WeakSet();
+
+    function replaceGetter(proto, property, transform) {
+      if (!proto) return false;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, property);
+      if (!descriptor || typeof descriptor.get !== 'function' || descriptor.configurable === false) {
+        return false;
+      }
+      const original = descriptor.get;
+      const replacement = typeof Proxy === 'function'
+        ? new Proxy(original, {
+          apply(target, thisArg, args) {
+            return transform(Reflect.apply(target, thisArg, args));
+          },
+        })
+        : function () { return transform(Reflect.apply(original, this, arguments)); };
+      try {
+        Object.defineProperty(proto, property, { ...descriptor, get: replacement });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    const scrubbedProperties = ['vendor', 'architecture', 'device'];
+    const protectedPrototypeProperties = new Set();
+    if (GPUAdapterInfoClass && GPUAdapterInfoClass.prototype) {
+      for (const property of scrubbedProperties) {
+        if (replaceGetter(GPUAdapterInfoClass.prototype, property, () => '')) {
+          protectedPrototypeProperties.add(property);
+        }
+      }
+    }
+
+    function protectAdapterInfo(info) {
+      if (!info || (typeof info !== 'object' && typeof info !== 'function')) return info;
+      if (protectedInfoObjects.has(info)) return protectedInfoObjects.get(info);
+      if (protectedPrototypeProperties.size === scrubbedProperties.length &&
+          (!GPUAdapterInfoClass || info instanceof GPUAdapterInfoClass)) {
+        protectedInfoObjects.set(info, info);
+        return info;
+      }
+      if (typeof Proxy !== 'function') return info;
+      const protectedInfo = new Proxy(info, {
+        get(target, property) {
+          if (scrubbedProperties.includes(property)) return '';
+          return Reflect.get(target, property, target);
+        },
+      });
+      protectedInfoObjects.set(info, protectedInfo);
+      return protectedInfo;
+    }
+
+    function replacePromiseMethod(proto, property, transform) {
+      if (!proto) return false;
+      let descriptor = Object.getOwnPropertyDescriptor(proto, property);
+      let owner = proto;
+      while (!descriptor && owner) {
+        owner = Object.getPrototypeOf(owner);
+        if (owner) descriptor = Object.getOwnPropertyDescriptor(owner, property);
+      }
+      if (!descriptor || typeof descriptor.value !== 'function') return false;
+      const original = descriptor.value;
+      const replacement = typeof Proxy === 'function'
+        ? new Proxy(original, {
+          apply(target, thisArg, args) {
+            const result = Reflect.apply(target, thisArg, args);
+            return result && typeof result.then === 'function' ? result.then(transform) : result;
+          },
+        })
+        : function () {
+          const result = Reflect.apply(original, this, arguments);
+          return result && typeof result.then === 'function' ? result.then(transform) : result;
+        };
+      try {
+        Object.defineProperty(proto, property, { ...descriptor, value: replacement });
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function protectDevice(device) {
+      if (!device || (typeof device !== 'object' && typeof device !== 'function')) return device;
+      const proto = Object.getPrototypeOf(device);
+      if (proto && !protectedDevicePrototypes.has(proto)) {
+        replaceGetter(proto, 'adapterInfo', protectAdapterInfo);
+        protectedDevicePrototypes.add(proto);
+      }
+      return device;
+    }
+
+    function protectAdapter(adapter) {
+      if (!adapter || (typeof adapter !== 'object' && typeof adapter !== 'function')) return adapter;
+      const proto = Object.getPrototypeOf(adapter);
+      if (proto && !protectedAdapterPrototypes.has(proto)) {
+        replaceGetter(proto, 'info', protectAdapterInfo);
+        replacePromiseMethod(proto, 'requestDevice', protectDevice);
+        protectedAdapterPrototypes.add(proto);
+      }
+      return adapter;
+    }
+
+    let installed = protectedPrototypeProperties.size > 0;
+    let adapterInfoGetterInstalled = false;
+    let deviceInfoGetterInstalled = false;
+    if (GPUAdapterClass && GPUAdapterClass.prototype) {
+      adapterInfoGetterInstalled = replaceGetter(
+        GPUAdapterClass.prototype,
+        'info',
+        protectAdapterInfo,
+      );
+      installed = adapterInfoGetterInstalled || installed;
+    }
+    if (GPUDeviceClass && GPUDeviceClass.prototype) {
+      deviceInfoGetterInstalled = replaceGetter(
+        GPUDeviceClass.prototype,
+        'adapterInfo',
+        protectAdapterInfo,
+      );
+      installed = deviceInfoGetterInstalled || installed;
+    }
+    if (gpuObject && (!adapterInfoGetterInstalled || !deviceInfoGetterInstalled)) {
+      const gpuProto = Object.getPrototypeOf(gpuObject);
+      installed = replacePromiseMethod(gpuProto, 'requestAdapter', protectAdapter) || installed;
+    }
+
+    if (!installed) return { installed: false, reason: 'descriptors-unavailable' };
+    installationRegistry.installers.webgpu = true;
     return { installed: true };
   }
 
@@ -911,6 +1187,7 @@
   const installationResults = {
     canvas: runInstaller('canvas', installCanvasProtection),
     webgl: runInstaller('webgl', installWebGLProtection),
+    webgpu: runInstaller('webgpu', installWebGPUProtection),
     audio: runInstaller('audio', installAudioProtection),
     navigator: runInstaller('navigator', installNavigatorProtection),
     plugins: runInstaller('plugins', installPluginProtection),

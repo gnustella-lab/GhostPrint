@@ -86,3 +86,20 @@ test('seed creation returns null when crypto or storage fails', () => {
   assert.equal(vm.runInContext('getOrCreateSeed(sessionStorage, crypto)', cryptoFailure.context), null);
   assert.equal(vm.runInContext('getOrCreateSeed(sessionStorage, crypto)', storageFailure.context), null);
 });
+
+test('one sessionStorage area keeps one seed while separate storage areas are independent', () => {
+  const firstArea = loadSeedContext({ randomValues: [111111111] });
+  const secondArea = loadSeedContext({ randomValues: [222222222] });
+
+  const firstSeed = vm.runInContext('getOrCreateSeed(sessionStorage, crypto)', firstArea.context);
+  const repeatedFirstSeed = vm.runInContext(
+    'getOrCreateSeed(sessionStorage, crypto)',
+    firstArea.context,
+  );
+  const secondSeed = vm.runInContext('getOrCreateSeed(sessionStorage, crypto)', secondArea.context);
+
+  assert.equal(firstSeed, 111111111);
+  assert.equal(repeatedFirstSeed, firstSeed);
+  assert.equal(secondSeed, 222222222);
+  assert.notEqual(secondSeed, firstSeed);
+});
