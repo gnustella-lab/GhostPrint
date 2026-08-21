@@ -42,6 +42,16 @@ test('overlapping reads farble the same physical pixel identically', () => {
   }
 });
 
+test('negative dimensions normalize the farbling origin to the same physical pixels', () => {
+  const context = createPageContext();
+  installInject(context);
+  const renderingContext = new context.HTMLCanvasElement().getContext('2d');
+  const positive = renderingContext.getImageData(0, 0, 64, 64).data;
+  const negative = renderingContext.getImageData(64, 64, -64, -64).data;
+
+  assert.deepEqual(Array.from(negative), Array.from(positive));
+});
+
 test('unsupported float16-like ImageData is returned without byte farbling', () => {
   const context = createPageContext();
   installInject(context);

@@ -50,6 +50,45 @@ function loadBackgroundContext({ initial = undefined, failGet = false, failSet =
   };
 }
 
+function loadDeferredBackgroundContext() {
+  let stored = { enabled: 'invalid' };
+  const pendingGets = [];
+  const pendingSets = [];
+  const listeners = {};
+  const browser = {
+    storage: {
+      local: {
+        get: () => new Promise((resolve) => pendingGets.push({ resolve })),
+        set: (value) => new Promise((resolve) => {
+          pendingSets.push({
+            value,
+            resolve: () => {
+              stored = value.settings;
+              resolve();
+            },
+          });
+        }),
+      },
+    },
+    runtime: {
+      getURL: (value) => `moz-extension://test/${value}`,
+      onInstalled: { addListener: (listener) => { listeners.installed = listener; } },
+      onStartup: { addListener: (listener) => { listeners.startup = listener; } },
+      onMessage: { addListener: (listener) => { listeners.message = listener; } },
+    },
+  };
+  const context = vm.createContext({ browser, Promise, Object, Array, Boolean, Number, String, setTimeout });
+  vm.runInContext(SETTINGS_SOURCE, context, { filename: 'settings.js' });
+  vm.runInContext(BACKGROUND_SOURCE, context, { filename: 'background.js' });
+  return {
+    get: () => stored,
+    pendingGets,
+    pendingSets,
+    send: (message, sender = { url: 'moz-extension://test/popup.html' }) =>
+      listeners.message(message, sender),
+  };
+}
+
 test('settings helpers clone defaults and remove unknown properties', () => {
   const context = loadSettingsContext();
   const result = vm.runInContext(`({
@@ -90,6 +129,29 @@ test('storage failures are returned as structured errors', async () => {
   assert.equal(JSON.stringify(await readFailure.send({ type: 'GET_SETTINGS' })), JSON.stringify({ ok: false, error: 'storage-read-failed' }));
   assert.equal(JSON.stringify(await writeFailure.send({ type: 'SET_SETTINGS', settings: { enabled: false } })), JSON.stringify({ ok: false, error: 'storage-write-failed' }));
   assert.equal(JSON.stringify(await writeFailure.send({ type: 'RESET_SETTINGS' })), JSON.stringify({ ok: false, error: 'storage-write-failed' }));
+});
+
+test('settings repair cannot overwrite a concurrent explicit write', async () => {
+  const background = loadDeferredBackgroundContext();
+  const getPromise = background.send({ type: 'GET_SETTINGS' });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  background.pendingGets.shift().resolve({ settings: { enabled: 'invalid' } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const setPromise = background.send({ type: 'SET_SETTINGS', settings: { enabled: false } });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(background.pendingSets.length, 1);
+
+  background.pendingSets[0].resolve();
+  const getResult = await getPromise;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(background.pendingSets.length, 2);
+  background.pendingSets[1].resolve();
+  const setResult = await setPromise;
+
+  assert.equal(JSON.stringify(setResult), JSON.stringify({ ok: true, settings: { enabled: false } }));
+  assert.equal(JSON.stringify(getResult), JSON.stringify({ ok: true, settings: { enabled: true } }));
+  assert.equal(JSON.stringify(background.get()), JSON.stringify({ enabled: false }));
 });
 
 test('unknown messages and unauthorized extension-page senders are rejected', async () => {

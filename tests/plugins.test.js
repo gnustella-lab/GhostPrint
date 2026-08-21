@@ -108,3 +108,46 @@ test('global MIME types are canonicalized by type', () => {
     context.navigator.mimeTypes.item(0),
   );
 });
+
+test('filtered PDF plugins retain non-PDF MIME types with an exposed owner', () => {
+  const context = createPageContext();
+  const nativePlugins = context.navigator.plugins;
+  const nativeMimeTypes = context.navigator.mimeTypes;
+  const nativePdfPlugin = nativePlugins.namedItem('Native PDF Viewer');
+  const extraMime = new context.MimeType(
+    'application/x-pdf-extra',
+    'Extra PDF companion format',
+    'xpdf',
+    nativePdfPlugin,
+  );
+  nativePdfPlugin[1] = extraMime;
+  nativePdfPlugin.length = 2;
+  nativeMimeTypes[nativeMimeTypes.length] = extraMime;
+  nativeMimeTypes.length += 1;
+
+  installInject(context);
+
+  const plugins = Array.from(context.navigator.plugins);
+  const mime = context.navigator.mimeTypes.namedItem('application/x-pdf-extra');
+  assert.ok(mime);
+  assert.equal(plugins.includes(mime.enabledPlugin), true);
+  assert.equal(
+    Array.from(mime.enabledPlugin).some((entry) => entry.type === mime.type),
+    true,
+  );
+});
+
+test('duplicate native MIME claims do not orphan a plugin MIME record', () => {
+  const context = createPageContext({ duplicateNativeMime: true });
+  installInject(context);
+
+  const plugins = Array.from(context.navigator.plugins);
+  const mimeTypes = Array.from(context.navigator.mimeTypes);
+  for (const plugin of plugins) {
+    for (let index = 0; index < plugin.length; index += 1) {
+      const mime = plugin.item(index);
+      assert.equal(mimeTypes.includes(mime), true, `${plugin.name}:${mime.type}`);
+      assert.strictEqual(mime.enabledPlugin, plugin, `${plugin.name}:${mime.type}`);
+    }
+  }
+});

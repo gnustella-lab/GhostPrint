@@ -13,7 +13,7 @@ The implemented surfaces are:
 | Canvas 2D | Changes a sparse subset of RGB channels in `getImageData`, `toDataURL`, and `toBlob` reads. Alpha remains intact. |
 | WebGL and WebGL 2 | Normalizes masked and unmasked vendor/renderer values to the generic Firefox-aligned string `Mozilla`. `WEBGL_debug_renderer_info` remains usable, but its hardware strings are normalized. Real extensions remain available and one seed-selected synthetic extension is appended; `getExtension()` returns one stable, inert object for that synthetic name. `readPixels()` farbling still applies only to safe `RGBA` + `UNSIGNED_BYTE` typed-array reads and respects WebGL 2 `dstOffset`. |
 | WebGPU | Scrubs `vendor`, `architecture`, and `device` from `GPUAdapterInfo` reached through both `GPUAdapter.info` and `GPUDevice.adapterInfo`. Adapter/device identity, Promises, `requestDevice()`, `features`, and `limits` remain operational and are not randomized. |
-| Web Audio | Applies deterministic farbling to `AudioBuffer` and `AnalyserNode` reads, including frequency and time-domain channels when those APIs exist. |
+| Web Audio | Applies deterministic farbling to `AudioBuffer` and `AnalyserNode` reads, including frequency and time-domain channels when those APIs exist. `AudioBuffer` channel reads use stable farbled copies so native playback samples are not mutated. |
 | Navigator | Applies deterministic farbling to `hardwareConcurrency`. |
 | Plugins and MIME types | Preserves native entries and adds a deterministic PDF profile with related objects across `navigator.plugins` and `navigator.mimeTypes`. |
 

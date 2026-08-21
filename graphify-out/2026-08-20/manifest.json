@@ -1,0 +1,162 @@
+{
+  "background.js": {
+    "mtime": 1787269787.6763253,
+    "ast_hash": "1a7bbafbe8b7a56d56ad88cb106ecda0",
+    "semantic_hash": ""
+  },
+  "content.js": {
+    "mtime": 1786671110.1684391,
+    "ast_hash": "303d5507f000524544f9e581717791d5",
+    "semantic_hash": ""
+  },
+  "inject.js": {
+    "mtime": 1787270100.0635574,
+    "ast_hash": "a9dab67c163cfc9b5680942dfb4c8324",
+    "semantic_hash": ""
+  },
+  "manifest.json": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "7e8484276c734d2ecf27c8645cd10813",
+    "semantic_hash": ""
+  },
+  "package.json": {
+    "mtime": 1787268767.3498526,
+    "ast_hash": "3e276c472c0a8013578bd84b7b957701",
+    "semantic_hash": ""
+  },
+  "popup.js": {
+    "mtime": 1787269923.3008497,
+    "ast_hash": "722256804014abdc55abf534e19846a2",
+    "semantic_hash": ""
+  },
+  "scripts/build.js": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "2ae1c40b35b4a13ce01b574cfc406243",
+    "semantic_hash": ""
+  },
+  "seed.js": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "dcd14771392e1340db5ca9c798c68b2d",
+    "semantic_hash": ""
+  },
+  "settings.js": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "02efe8e547c6c9fdcc06f79c53a2bbbe",
+    "semantic_hash": ""
+  },
+  "tests/audio-missing.test.js": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "0e0dbdff62782f8ae3d871a188073b4d",
+    "semantic_hash": ""
+  },
+  "tests/audio.test.js": {
+    "mtime": 1787269524.8098183,
+    "ast_hash": "24fc5147c7fe9a0568d85013772ec27a",
+    "semantic_hash": ""
+  },
+  "tests/canvas.test.js": {
+    "mtime": 1787269456.7670457,
+    "ast_hash": "0eb433618306fb39310434d432e069a3",
+    "semantic_hash": ""
+  },
+  "tests/content.test.js": {
+    "mtime": 1786671110.1703794,
+    "ast_hash": "c70d2d3b8d118b5f84313a67262982e9",
+    "semantic_hash": ""
+  },
+  "tests/frames.test.js": {
+    "mtime": 1786672466.224392,
+    "ast_hash": "0282c7d0deefc7fb848f123d4f96f1e9",
+    "semantic_hash": ""
+  },
+  "tests/helpers/audio-harness.js": {
+    "mtime": 1787267731.3868845,
+    "ast_hash": "15eb5fbd44179de95b6c9ebadcbef0bd",
+    "semantic_hash": ""
+  },
+  "tests/helpers/canvas-harness.js": {
+    "mtime": 1787269453.7090294,
+    "ast_hash": "fcbc941638146a30832cdc960b1c584b",
+    "semantic_hash": ""
+  },
+  "tests/helpers/inject-harness.js": {
+    "mtime": 1786673049.9244728,
+    "ast_hash": "102ad998f9d9853c1d5f9d866dece54a",
+    "semantic_hash": ""
+  },
+  "tests/helpers/plugin-harness.js": {
+    "mtime": 1786671110.1706874,
+    "ast_hash": "c305a39b5cb8b7eee30eb40382e0f803",
+    "semantic_hash": ""
+  },
+  "tests/installers.test.js": {
+    "mtime": 1786671110.1706874,
+    "ast_hash": "5f85bb3f025bdc2dab2b40dd6b9332ee",
+    "semantic_hash": ""
+  },
+  "tests/plugins.test.js": {
+    "mtime": 1787267954.2118404,
+    "ast_hash": "0f3f930bb6d57135375143613e293fb7",
+    "semantic_hash": ""
+  },
+  "tests/popup-a11y.test.js": {
+    "mtime": 1786671110.1706874,
+    "ast_hash": "b6d9bd0abe8a1708746d10a14bd1bda6",
+    "semantic_hash": ""
+  },
+  "tests/seed.test.js": {
+    "mtime": 1786672455.7911618,
+    "ast_hash": "ca3f7ac157cf28313f7d6cccd10114ee",
+    "semantic_hash": ""
+  },
+  "tests/settings.test.js": {
+    "mtime": 1787269838.7565205,
+    "ast_hash": "738f90f681effb5966eb86b14b16c4a0",
+    "semantic_hash": ""
+  },
+  "tests/webgl.test.js": {
+    "mtime": 1786673390.23905,
+    "ast_hash": "8125979f80d09c69a96ef77495f0dc28",
+    "semantic_hash": ""
+  },
+  "tests/webgpu.test.js": {
+    "mtime": 1786672249.4528263,
+    "ast_hash": "a657a8e79b837f31425fd17fa780bef1",
+    "semantic_hash": ""
+  },
+  ".github/workflows/ci.yml": {
+    "mtime": 1786671110.1684391,
+    "ast_hash": "aefbdc3b02ceee58e4120ab1d671e4f2",
+    "semantic_hash": ""
+  },
+  "GATES.md": {
+    "mtime": 1787270170.5049224,
+    "ast_hash": "ba0b51ed9ca35c0da597e280a6e9d72b",
+    "semantic_hash": ""
+  },
+  "README.md": {
+    "mtime": 1787270135.0947,
+    "ast_hash": "ab30604d87aceaf60e668b5158e0e65d",
+    "semantic_hash": ""
+  },
+  "popup.html": {
+    "mtime": 1786671110.1686013,
+    "ast_hash": "efef1a18630e2372060ef9ae421bd2dd",
+    "semantic_hash": ""
+  },
+  "tests/gpu-fingerprinting-harness.html": {
+    "mtime": 1786672351.9277368,
+    "ast_hash": "99cfb81e69b67eb58e59d089e2dd9de1",
+    "semantic_hash": ""
+  },
+  "icons/ghost.svg": {
+    "mtime": 1786671110.1684391,
+    "ast_hash": "a42e162152b8266162c03a173b8ad6c9",
+    "semantic_hash": ""
+  },
+  "tests/popup-status.test.js": {
+    "mtime": 1787269748.3131769,
+    "ast_hash": "ddfa718976deb23efb22faa26083ce86",
+    "semantic_hash": ""
+  }
+}

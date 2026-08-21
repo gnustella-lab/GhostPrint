@@ -52,21 +52,23 @@ function createPageContext({ seed = '123456789' } = {}) {
       const TypedArray = pixelFormat === 'rgba-float16'
         ? Float32Array
         : Uint8ClampedArray;
-      const data = new TypedArray(sw * sh * 4);
-      const originX = Math.trunc(Number(sx));
-      const originY = Math.trunc(Number(sy));
-      for (let localY = 0; localY < sh; localY += 1) {
-        for (let localX = 0; localX < sw; localX += 1) {
+      const width = Math.abs(Math.trunc(Number(sw)));
+      const height = Math.abs(Math.trunc(Number(sh)));
+      const originX = Math.trunc(Number(sx)) + (sw < 0 ? -width : 0);
+      const originY = Math.trunc(Number(sy)) + (sh < 0 ? -height : 0);
+      const data = new TypedArray(width * height * 4);
+      for (let localY = 0; localY < height; localY += 1) {
+        for (let localX = 0; localX < width; localX += 1) {
           const x = originX + localX;
           const y = originY + localY;
-          const index = (localY * sw + localX) * 4;
+          const index = (localY * width + localX) * 4;
           data[index] = sourcePixel(x, y, 0);
           data[index + 1] = sourcePixel(x, y, 1);
           data[index + 2] = sourcePixel(x, y, 2);
           data[index + 3] = 255;
         }
       }
-      return { data, width: sw, height: sh };
+      return { data, width, height };
     }
 
     drawImage(source) {

@@ -9,21 +9,33 @@ function settingsNeedRepair(raw, normalized) {
   return keys.length !== 1 || keys[0] !== 'enabled' || raw.enabled !== normalized.enabled;
 }
 
-async function readSettings() {
-  const result = await browser.storage.local.get('settings');
-  const raw = result && result.settings;
-  const normalized = normalizeSettings(raw);
-  if (settingsNeedRepair(raw, normalized)) {
-    await browser.storage.local.set({ settings: normalized });
-  }
-  return normalized;
+let settingsQueue = Promise.resolve();
+
+function enqueueSettings(operation) {
+  const next = settingsQueue.then(operation, operation);
+  settingsQueue = next.catch(() => undefined);
+  return next;
 }
 
-async function writeSettings(value) {
+function readSettings() {
+  return enqueueSettings(async () => {
+    const result = await browser.storage.local.get('settings');
+    const raw = result && result.settings;
+    const normalized = normalizeSettings(raw);
+    if (settingsNeedRepair(raw, normalized)) {
+      await browser.storage.local.set({ settings: normalized });
+    }
+    return normalized;
+  });
+}
+
+function writeSettings(value) {
   const validation = validateSettings(value);
-  if (!validation.valid) return { ok: false, error: 'invalid-settings' };
-  await browser.storage.local.set({ settings: validation.settings });
-  return { ok: true, settings: validation.settings };
+  if (!validation.valid) return Promise.resolve({ ok: false, error: 'invalid-settings' });
+  return enqueueSettings(async () => {
+    await browser.storage.local.set({ settings: validation.settings });
+    return { ok: true, settings: validation.settings };
+  });
 }
 
 async function ensureSettings() {

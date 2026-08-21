@@ -48,10 +48,32 @@ async function renderSeed() {
   }
 }
 
-function renderStatus(enabled) {
+async function loadInjectionStatus() {
+  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  const tab = tabs && tabs[0];
+  if (!tab || tab.id === undefined) throw new Error('no active tab');
+  const response = await browser.tabs.sendMessage(
+    tab.id,
+    { type: 'GET_INJECTION_STATUS' },
+    { frameId: 0 },
+  );
+  if (!response || typeof response.state !== 'string') throw new Error('injection-status-unavailable');
+  return response;
+}
+
+function renderStatus(enabled, injectionStatus) {
   const banner = document.getElementById('statusBanner');
   const icon = document.getElementById('statusIcon');
   const text = document.getElementById('statusText');
+  if (enabled && injectionStatus && injectionStatus.state !== 'installed') {
+    const message = injectionStatus.state === 'pending'
+      ? 'Starting protection, reload if needed'
+      : 'Protection unavailable, reload the page';
+    banner.className = 'status-banner error';
+    icon.textContent = '⚠️';
+    text.textContent = message;
+    return;
+  }
   banner.className = enabled ? 'status-banner active' : 'status-banner inactive';
   icon.textContent = enabled ? '🛡️' : '⚠️';
   text.textContent = enabled ? 'Randomizing, reload pages' : 'Disabled, reload pages';
@@ -137,19 +159,28 @@ function bindControls() {
 
 async function init() {
   const toggle = document.getElementById('globalToggle');
+  let settingsFailed = false;
   try {
     currentSettings = await loadSettings();
   } catch (err) {
     console.error('GhostPrint: could not load settings:', err);
     currentSettings = cloneDefaultSettings();
+    settingsFailed = true;
     renderError('Could not load settings');
   }
 
   toggle.checked = currentSettings.enabled;
   bindControls();
   renderFields(currentSettings.enabled);
-  if (document.getElementById('statusBanner').classList.contains('error') === false) {
-    renderStatus(currentSettings.enabled);
+  if (!settingsFailed) {
+    let injectionStatus;
+    try {
+      injectionStatus = await loadInjectionStatus();
+    } catch (err) {
+      console.error('GhostPrint: could not read injection status:', err);
+      injectionStatus = { state: 'unavailable' };
+    }
+    renderStatus(currentSettings.enabled, injectionStatus);
   }
   void renderSeed();
 }

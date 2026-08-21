@@ -115,6 +115,27 @@ test('idempotency registry does not use the predictable global symbol key', () =
   );
 });
 
+test('hardwareConcurrency stays on the Navigator prototype when it is configurable', () => {
+  const context = createPageContext();
+  installInject(context);
+
+  assert.equal(vm.runInContext("Object.hasOwn(navigator, 'hardwareConcurrency')", context), false);
+  assert.equal(typeof context.navigator.hardwareConcurrency, 'number');
+});
+
+test('hardwareConcurrency overrides an existing own property fallback', () => {
+  const context = createPageContext();
+  vm.runInContext(
+    "Object.defineProperty(navigator, 'hardwareConcurrency', { value: 32, configurable: true })",
+    context,
+  );
+
+  installInject(context);
+
+  assert.equal([2, 4, 6, 8, 12, 16].includes(context.navigator.hardwareConcurrency), true);
+  assert.equal(vm.runInContext("Object.hasOwn(navigator, 'hardwareConcurrency')", context), true);
+});
+
 test('navigator fallback remains available when WebIDL prototypes are locked', () => {
   const context = createPageContext();
   vm.runInContext(`

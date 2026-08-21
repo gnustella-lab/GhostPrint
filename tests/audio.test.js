@@ -30,6 +30,17 @@ test('getChannelData and copyFromChannel expose one stable farbled view', async 
   assert.equal(secondView[7], -Infinity);
 });
 
+test('getChannelData does not mutate the native AudioBuffer backing samples', async () => {
+  const context = createPageContext();
+  installInject(context);
+  const buffer = await new context.OfflineAudioContext().startRendering();
+  const before = buffer.channels[0].slice();
+
+  buffer.getChannelData(0);
+
+  assert.deepEqual(Array.from(buffer.channels[0]), Array.from(before));
+});
+
 test('all analyser read methods preserve returns and only farble filled data', () => {
   const context = createPageContext();
   installInject(context);
@@ -57,6 +68,39 @@ test('all analyser read methods preserve returns and only farble filled data', (
   floatFrequency.fill(-999);
   analyser.getFloatFrequencyData(floatFrequency);
   assert.equal(floatFrequency[1], -Infinity);
+});
+
+test('time-domain analyser protection covers the full fftSize', () => {
+  const firstContext = createPageContext({ seed: '1001' });
+  const secondContext = createPageContext({ seed: '2002' });
+  installInject(firstContext);
+  installInject(secondContext);
+
+  const firstAnalyser = new firstContext.AudioContext().createAnalyser();
+  const secondAnalyser = new secondContext.AudioContext().createAnalyser();
+  firstAnalyser.frequencyBinCount = 128;
+  secondAnalyser.frequencyBinCount = 128;
+  firstAnalyser.fftSize = 256;
+  secondAnalyser.fftSize = 256;
+
+  const first = new Float32Array(256);
+  const second = new Float32Array(256);
+  firstAnalyser.getFloatTimeDomainData(first);
+  secondAnalyser.getFloatTimeDomainData(second);
+
+  assert.equal(
+    first.slice(128).some((value, index) => value !== second[index + 128]),
+    true,
+  );
+
+  const firstBytes = new Uint8Array(256);
+  const secondBytes = new Uint8Array(256);
+  firstAnalyser.getByteTimeDomainData(firstBytes);
+  secondAnalyser.getByteTimeDomainData(secondBytes);
+  assert.equal(
+    firstBytes.slice(128).some((value, index) => value !== secondBytes[index + 128]),
+    true,
+  );
 });
 
 test('different seeds produce different deterministic analyser output', () => {
@@ -137,7 +181,7 @@ test('invalid analyser frequencyBinCount does not farble untouched output', () =
     analyser.frequencyBinCount = value;
     const output = new Float32Array(4096);
     output.fill(1.25);
-    analyser.getFloatTimeDomainData(output);
+    analyser.getFloatFrequencyData(output);
     assert.equal(output.every((sample) => sample === 1.25), true, String(value));
   }
 });

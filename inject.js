@@ -296,12 +296,16 @@
       const sourceHeight = toInteger(sourceCanvas && sourceCanvas.height);
       if (width <= 0 || height <= 0 || sourceWidth <= 0 || sourceHeight <= 0) return imageData;
 
+      const requestedX = toInteger(arguments[0]);
+      const requestedY = toInteger(arguments[1]);
+      const originX = toInteger(arguments[2]) < 0 ? requestedX - width : requestedX;
+      const originY = toInteger(arguments[3]) < 0 ? requestedY - height : requestedY;
       farblePixels(
         data,
         width,
         height,
-        toInteger(arguments[0]),
-        toInteger(arguments[1]),
+        originX,
+        originY,
         sourceWidth,
         sourceHeight,
       );
@@ -745,8 +749,9 @@
     if (!pageWindow) return { installed: false, reason: 'api-unavailable' };
 
     // Protect each available read surface independently. AudioBuffer samples are
-    // farbled in place only after the native read succeeds, so
-    // getChannelData/copyFromChannel observe the same stable view.
+    // copied into a stable farbled view only after the native read succeeds, so
+    // getChannelData/copyFromChannel observe the same view without mutating the
+    // native buffer backing audio playback.
     const OfflineAudioCtxClass = pageWindow.OfflineAudioContext || pageWindow.webkitOfflineAudioContext;
     const AudioCtxClass = pageWindow.AudioContext || pageWindow.webkitAudioContext;
     const AudioBufferClass = pageWindow.AudioBuffer;
@@ -760,7 +765,7 @@
   function getAudioBufferState(buffer) {
     let state = audioBufferStates.get(buffer);
     if (!state) {
-      state = { farbledChannels: new Set() };
+      state = { farbledChannels: new Map() };
       audioBufferStates.set(buffer, state);
     }
     return state;
@@ -781,12 +786,21 @@
     }
   }
 
+  function cloneFarbledAudioChannel(data, channel) {
+    if (!isTypedArray(data, 'Float32Array')) return data;
+    const copy = new Float32Array(data.length);
+    copy.set(data);
+    farbleAudioRange(copy, channel, 0, copy.length);
+    return copy;
+  }
+
   function farbleWholeAudioChannel(buffer, state, originalGetChannelData, channel) {
-    if (state.farbledChannels.has(channel)) return null;
+    const cached = state.farbledChannels.get(channel);
+    if (cached) return cached;
     const data = Reflect.apply(originalGetChannelData, buffer, [channel]);
-    farbleAudioRange(data, channel, 0, data.length);
-    state.farbledChannels.add(channel);
-    return data;
+    const farbled = cloneFarbledAudioChannel(data, channel);
+    if (farbled !== data) state.farbledChannels.set(channel, farbled);
+    return farbled;
   }
 
   function patchAudioBufferPrototype() {
@@ -808,10 +822,10 @@
         try {
           const state = getAudioBufferState(this);
           const channel = toInteger(arguments[0]);
-          if (!state.farbledChannels.has(channel)) {
-            farbleAudioRange(data, channel, 0, data.length);
-            state.farbledChannels.add(channel);
-          }
+          const farbled = state.farbledChannels.get(channel) ||
+            cloneFarbledAudioChannel(data, channel);
+          if (farbled !== data) state.farbledChannels.set(channel, farbled);
+          return farbled;
         } catch (_) {}
         return data;
       };
@@ -852,10 +866,14 @@
           const channel = toInteger(arguments[1]);
           const start = toInteger(arguments[2]);
           const state = getAudioBufferState(this);
-          if (state.farbledChannels.has(channel)) {
+          const farbled = state.farbledChannels.get(channel);
+          if (farbled) {
             const data = Reflect.apply(originalGetChannelData, this, [channel]);
             const count = source && typeof source.length === 'number' ? source.length : 0;
-            farbleAudioRange(data, channel, start, start + count);
+            const first = Math.max(0, start);
+            const last = Math.min(farbled.length, first + count);
+            for (let index = first; index < last; index += 1) farbled[index] = data[index];
+            farbleAudioRange(farbled, channel, start, start + count);
           }
         } catch (_) {}
         return result;
@@ -863,9 +881,9 @@
     }
   }
 
-  function farbleAnalyserArray(node, array, kind, tag) {
+  function farbleAnalyserArray(node, array, kind, tag, limitProperty) {
     if (!array || typeof array.length !== 'number') return;
-    const limitValue = Number(node && node.frequencyBinCount);
+    const limitValue = Number(node && node[limitProperty]);
     if (!Number.isSafeInteger(limitValue) || limitValue <= 0) return;
     const limit = Math.min(array.length, limitValue);
     const isFloat = kind === 'float';
@@ -888,18 +906,18 @@
   function patchAnalyserMethods(proto) {
     if (!proto) return false;
     const methods = [
-      ['getFloatFrequencyData', 'float', 1],
-      ['getByteFrequencyData', 'byte', 2],
-      ['getFloatTimeDomainData', 'float', 3],
-      ['getByteTimeDomainData', 'byte', 4],
+      ['getFloatFrequencyData', 'float', 1, 'frequencyBinCount'],
+      ['getByteFrequencyData', 'byte', 2, 'frequencyBinCount'],
+      ['getFloatTimeDomainData', 'float', 3, 'fftSize'],
+      ['getByteTimeDomainData', 'byte', 4, 'fftSize'],
     ];
     let installed = false;
-    for (const [name, kind, tag] of methods) {
+    for (const [name, kind, tag, limitProperty] of methods) {
       const original = typeof proto[name] === 'function' ? proto[name] : null;
       if (!original) continue;
       proto[name] = function () {
         const result = Reflect.apply(original, this, arguments);
-        try { farbleAnalyserArray(this, arguments[0], kind, tag); } catch (_) {}
+        try { farbleAnalyserArray(this, arguments[0], kind, tag, limitProperty); } catch (_) {}
         return result;
       };
       installed = true;
@@ -911,17 +929,17 @@
     if (!analyser || patchedAnalyserNodes.has(analyser)) return analyser;
     patchedAnalyserNodes.add(analyser);
     const methods = [
-      ['getFloatFrequencyData', 'float', 1],
-      ['getByteFrequencyData', 'byte', 2],
-      ['getFloatTimeDomainData', 'float', 3],
-      ['getByteTimeDomainData', 'byte', 4],
+      ['getFloatFrequencyData', 'float', 1, 'frequencyBinCount'],
+      ['getByteFrequencyData', 'byte', 2, 'frequencyBinCount'],
+      ['getFloatTimeDomainData', 'float', 3, 'fftSize'],
+      ['getByteTimeDomainData', 'byte', 4, 'fftSize'],
     ];
-    for (const [name, kind, tag] of methods) {
+    for (const [name, kind, tag, limitProperty] of methods) {
       const original = typeof analyser[name] === 'function' ? analyser[name] : null;
       if (!original) continue;
       analyser[name] = function () {
         const result = Reflect.apply(original, this, arguments);
-        try { farbleAnalyserArray(this, arguments[0], kind, tag); } catch (_) {}
+        try { farbleAnalyserArray(this, arguments[0], kind, tag, limitProperty); } catch (_) {}
         return result;
       };
     }
@@ -960,10 +978,14 @@
     }
     const HC_POOL = [2, 4, 6, 8, 12, 16];
     const spoofedHC = HC_POOL[mix(0xC0FFEE) % HC_POOL.length];
-    defineGetter(NavigatorClass.prototype, 'hardwareConcurrency', () => spoofedHC);
-    // Also override on the navigator instance, some browsers define the
-    // property there and prototype-level overrides get shadowed.
-    defineGetter(navigator, 'hardwareConcurrency', () => spoofedHC);
+    const prototypeInstalled = defineGetter(
+      NavigatorClass.prototype,
+      'hardwareConcurrency',
+      () => spoofedHC,
+    );
+    if (!prototypeInstalled || Object.prototype.hasOwnProperty.call(navigator, 'hardwareConcurrency')) {
+      defineGetter(navigator, 'hardwareConcurrency', () => spoofedHC);
+    }
 
     installationRegistry.installers.navigator = true;
     return { installed: true };
@@ -1027,18 +1049,18 @@
         try { return collection[index] || null; } catch (_) { return null; }
       }
 
-      function appendUnique(entries, value) {
-        if (value && !entries.includes(value)) entries.push(value);
+      function mimeKey(mime) {
+        return mime && typeof mime.type === 'string' ? mime.type : mime;
       }
 
-      function appendUniqueMime(entries, value) {
-        if (!value) return;
-        const type = typeof value.type === 'string' ? value.type : null;
-        if (type !== null) {
-          if (!entries.some((entry) => entry && entry.type === type)) entries.push(value);
-          return;
+      function readPluginMimes(plugin) {
+        const entries = [];
+        if (!plugin || typeof plugin.length !== 'number') return entries;
+        for (let i = 0; i < plugin.length; i += 1) {
+          const mime = readItem(plugin, i);
+          if (mime) entries.push(mime);
         }
-        appendUnique(entries, value);
+        return entries;
       }
 
       function isPdfMime(mime) {
@@ -1053,31 +1075,99 @@
           ? plugin.description.toLowerCase()
           : '';
         if (name.includes('pdf') || description.includes('pdf')) return true;
-        if (typeof plugin.length !== 'number') return false;
-        for (let i = 0; i < plugin.length; i += 1) {
-          if (isPdfMime(readItem(plugin, i))) return true;
-        }
-        return false;
+        return readPluginMimes(plugin).some((mime) => isPdfMime(mime));
+      }
+
+      function createMimeRecord(source, enabledPlugin) {
+        const mime = createNativeLikeObject(MimeTypeClass, source);
+        setValue(mime, 'type', source && source.type);
+        setValue(mime, 'description', source && source.description);
+        setValue(mime, 'suffixes', source && source.suffixes);
+        setValue(mime, 'enabledPlugin', enabledPlugin);
+        return mime;
+      }
+
+      function createPluginRecord(source, sourceMimes) {
+        const plugin = createNativeLikeObject(PluginClass, source);
+        const mimes = sourceMimes.map((sourceMime) => createMimeRecord(sourceMime, plugin));
+        setValue(plugin, 'name', source && source.name);
+        setValue(plugin, 'description', source && source.description);
+        setValue(plugin, 'filename', source && source.filename);
+        setValue(plugin, 'length', mimes.length);
+        mimes.forEach((mime, index) => setValue(plugin, String(index), mime, true));
+        mimes.forEach((mime) => {
+          if (typeof mime.type === 'string' && mime.type.length > 0) {
+            setValue(plugin, mime.type, mime);
+          }
+        });
+        setValue(plugin, 'item', function item(index) {
+          if (this !== plugin) throw new TypeError('Illegal invocation');
+          const i = toInteger(index);
+          return i >= 0 && i < mimes.length ? mimes[i] : null;
+        });
+        setValue(plugin, 'namedItem', function namedItem(type) {
+          if (this !== plugin) throw new TypeError('Illegal invocation');
+          return mimes.find((mime) => mime.type === String(type)) || null;
+        });
+        return { plugin, mimes };
       }
 
       const pluginEntries = [];
-      for (let i = 0; i < realPlugins.length; i += 1) {
-        const plugin = readItem(realPlugins, i);
-        if (!isPdfPlugin(plugin)) appendUnique(pluginEntries, plugin);
+      const mimeEntries = [];
+      const mimeByKey = new Map();
+      const pluginRecords = new Map();
+
+      function registerPlugin(source, plugin, mimes) {
+        const recordMimes = new Map();
+        for (const mime of mimes) {
+          const key = mimeKey(mime);
+          if (!recordMimes.has(key)) recordMimes.set(key, mime);
+        }
+        pluginEntries.push(plugin);
+        pluginRecords.set(source, { plugin, mimes: recordMimes });
+        for (const [key, mime] of recordMimes) {
+          if (!mimeByKey.has(key)) {
+            mimeByKey.set(key, mime);
+            mimeEntries.push(mime);
+          }
+        }
       }
 
-      const mimeEntries = [];
+      for (let i = 0; i < realPlugins.length; i += 1) {
+        const plugin = readItem(realPlugins, i);
+        if (!plugin) continue;
+        const retainedMimes = readPluginMimes(plugin).filter((mime) => !isPdfMime(mime));
+        const uniqueMimes = retainedMimes.filter((mime, index) => {
+          const key = mimeKey(mime);
+          return !mimeByKey.has(key) &&
+            retainedMimes.findIndex((candidate) => mimeKey(candidate) === key) === index;
+        });
+        if (isPdfPlugin(plugin)) {
+          if (uniqueMimes.length === 0) continue;
+          const normalized = createPluginRecord(plugin, uniqueMimes);
+          registerPlugin(plugin, normalized.plugin, normalized.mimes);
+          continue;
+        }
+        if (uniqueMimes.length === retainedMimes.length || retainedMimes.length === 0) {
+          registerPlugin(plugin, plugin, retainedMimes);
+        } else if (uniqueMimes.length > 0) {
+          const normalized = createPluginRecord(plugin, uniqueMimes);
+          registerPlugin(plugin, normalized.plugin, normalized.mimes);
+        }
+      }
+
       if (realMimeTypes && typeof realMimeTypes.length === 'number') {
         for (let i = 0; i < realMimeTypes.length; i += 1) {
           const mime = readItem(realMimeTypes, i);
-          if (!isPdfMime(mime)) appendUniqueMime(mimeEntries, mime);
-        }
-      }
-      for (const plugin of pluginEntries) {
-        if (!plugin || typeof plugin.length !== 'number') continue;
-        for (let i = 0; i < plugin.length; i += 1) {
-          const mime = readItem(plugin, i);
-          if (!isPdfMime(mime)) appendUniqueMime(mimeEntries, mime);
+          if (!mime || isPdfMime(mime)) continue;
+          const key = mimeKey(mime);
+          if (mimeByKey.has(key)) continue;
+          const ownerRecord = pluginRecords.get(mime.enabledPlugin);
+          const canonical = ownerRecord && ownerRecord.mimes.has(key)
+            ? ownerRecord.mimes.get(key)
+            : createMimeRecord(mime, null);
+          mimeByKey.set(key, canonical);
+          mimeEntries.push(canonical);
         }
       }
 

@@ -141,6 +141,7 @@ class PageOfflineAudioContext {
 class PageAnalyserNode {
   constructor() {
     this.frequencyBinCount = 4;
+    this.fftSize = 8;
   }
 
   getFloatFrequencyData(array) {
@@ -158,14 +159,14 @@ class PageAnalyserNode {
   }
 
   getFloatTimeDomainData(array) {
-    for (let i = 0; i < Math.min(array.length, this.frequencyBinCount); i += 1) {
+    for (let i = 0; i < Math.min(array.length, this.fftSize); i += 1) {
       array[i] = 0.1 + i / 100;
     }
     return 'native-float-time';
   }
 
   getByteTimeDomainData(array) {
-    for (let i = 0; i < Math.min(array.length, this.frequencyBinCount); i += 1) {
+    for (let i = 0; i < Math.min(array.length, this.fftSize); i += 1) {
       array[i] = 128 + i;
     }
     return 'native-byte-time';

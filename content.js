@@ -22,6 +22,7 @@ function installHooks() {
     const script = document.createElement('script');
     script.src = `${browser.runtime.getURL('inject.js')}#seed=${seed}`;
     script.onload = () => {
+      injectionState = 'installed';
       script.remove();
     };
     script.onerror = () => {
@@ -33,7 +34,6 @@ function installHooks() {
     // Keep the element connected until the external script has loaded. Removing
     // it before the post-connection steps can prevent the browser from
     // preparing and executing a dynamically inserted script.
-    injectionState = 'installed';
     return true;
   } catch (_) {
     seed = null;

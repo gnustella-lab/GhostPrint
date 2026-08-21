@@ -108,3 +108,17 @@ test('injection failure invalidates the seed exposed to the popup', async () => 
   assert.equal(status.state, 'injection-failed');
   assert.equal(status.seed, undefined);
 });
+
+test('injection is not reported as installed before the page script loads', async () => {
+  const result = await runContent({
+    settingsResponse: { ok: true, settings: { enabled: true } },
+    randomValue: 42,
+  });
+
+  const beforeLoad = await result.seedListener({ type: 'GET_INJECTION_STATUS' });
+  result.appended[0].onload();
+  const afterLoad = await result.seedListener({ type: 'GET_INJECTION_STATUS' });
+
+  assert.equal(beforeLoad.state, 'pending');
+  assert.equal(afterLoad.state, 'installed');
+});
