@@ -19,6 +19,14 @@ The implemented surfaces are:
 
 The code uses feature detection. The absence of one specific API should not prevent other available installers from running.
 
+### Per-site overrides
+
+Settings are `{ enabled: boolean, sites: { "<origin>": "on" | "off" } }`. The popup exposes a per-origin switch for the active tab using denylist semantics: the global switch always wins, and an explicit `off` disables one origin while protection is globally on. The content script sends its origin with the settings request and the background resolves the effective decision; when the background is unreachable the content script still fails safe to global ON. Site writes must already be canonical origins (lowercase serialized `http`/`https` origin); normalization caps the map at 500 entries.
+
+The popup also shows which surfaces actually installed on the loaded page. After injection, `inject.js` answers a one-time tokened `postMessage` handshake started by the content script with its installer results (`installed`, `unavailable`, or `failed` per surface). The page can observe, spoof, or suppress that report — it is advisory status for the popup only, never a functional input, and the receiving side validates an unguessable token before trusting it.
+
+Two actions complete the popup: **Reload page** applies pending setting changes to the active tab, and **New identity** clears the site's session seed through a `RESET_SEED` message and reloads the tab so the next load generates a fresh one.
+
 ## How the seed works
 
 `seed.js` creates a validated 32-bit decimal seed with `crypto.getRandomValues` and stores it in the content script's `sessionStorage`. Before loading `inject.js`, `content.js` carries that validated value in the URL fragment of the external resource. The page-realm code uses only the carried value and never reads page-visible storage, avoiding a seed swap between the content-script lookup and hook startup.
@@ -93,7 +101,7 @@ The manifest declares Firefox 140 as the minimum version. This configuration has
 4. Select the `manifest.json` file in this directory.
 5. Reload pages that were already open.
 
-The popup lets you enable or disable protection. The change affects only new injections, so pages must be reloaded.
+The popup lets you enable or disable protection globally, toggle it for the current site, reload the page to apply changes, and rotate the session seed with **New identity**. Setting changes affect only new injections, so pages must be reloaded; the popup surfaces a reload action whenever that is the case.
 
 ## Development and verification
 
@@ -121,7 +129,9 @@ Before distributing a version, manually verify the following in Firefox:
 - WebGL 1 and WebGL 2 calls, including PBOs;
 - `AudioBuffer`, `AnalyserNode`, workers, and `OffscreenCanvas`;
 - navigation after disabling and re-enabling the extension;
-- keyboard access, visible focus, and popup error messages.
+- keyboard access, visible focus, and popup error messages;
+- per-site switch on and off against the loaded page (banner and seed line);
+- New identity produces a different seed hex for the same origin after reload.
 
 ## Main files
 

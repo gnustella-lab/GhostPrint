@@ -130,6 +130,62 @@ body {
 .status-banner.inactive .status-text { color: var(--red); }
 .status-banner.error .status-text { color: #fbbf24; }
 
+/* ─── Per-site Card ─────────────────────────────────────────────────── */
+.site-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 14px;
+}
+
+.site-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.site-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.site-origin {
+  font-family: 'Courier New', monospace;
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toggle-small {
+  width: 34px;
+  height: 19px;
+  flex-shrink: 0;
+}
+
+.toggle-small .slider { border-radius: 19px; }
+
+.toggle-small .slider::before {
+  width: 13px;
+  height: 13px;
+  top: 3px;
+  left: 3px;
+}
+
+.toggle-small input:checked + .slider::before { transform: translateX(15px); }
+.toggle-small input:focus-visible + .slider {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.toggle input:disabled + .slider { opacity: 0.5; cursor: default; }
+
 /* ─── Session Card ──────────────────────────────────────────────────── */
 .session-card {
   background: var(--surface);
@@ -216,7 +272,40 @@ body {
 
 .protection-row.on  .protection-dot { background: var(--green); }
 .protection-row.off .protection-dot { background: var(--red);   }
+.protection-row.na  .protection-dot { background: var(--border); }
 .protection-row.off .protection-name { color: var(--muted); }
+.protection-row.na .protection-name  { color: var(--muted); }
+
+/* ─── Actions ───────────────────────────────────────────────────────── */
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-action {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: border-color 0.15s, color 0.15s, opacity 0.15s;
+}
+
+.btn-action:hover { border-color: var(--accent); }
+
+.btn-action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
 
 /* ─── Footer ────────────────────────────────────────────────────────── */
 .footer {

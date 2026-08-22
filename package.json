@@ -1,11 +1,11 @@
 {
   "name": "ghostprint",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "description": "Development tooling for the GhostPrint Firefox extension",
   "scripts": {
     "test": "node --test",
-    "check": "node --check settings.js && node --check background.js && node --check content.js && node --check popup.js && node --check inject.js",
+    "check": "node --check settings.js && node --check background.js && node --check content.js && node --check popup.js && node --check inject.js && node -e \"const fs=require('node:fs'); const manifest=JSON.parse(fs.readFileSync('manifest.json','utf8')); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); if (manifest.version !== pkg.version) { console.error('version mismatch: manifest '+manifest.version+' vs package '+pkg.version); process.exit(1); } console.log('version parity ok ('+manifest.version+')');\"",
     "lint": "npx --yes web-ext@10.5.0 lint --source-dir . --ignore-files tests/gpu-fingerprinting-harness.html graphify-out/** --no-config-discovery",
     "build": "node scripts/build.js"
   },

@@ -27,6 +27,18 @@
       <span class="status-text" id="statusText">Protection active</span>
     </div>
 
+    <!-- Per-site control -->
+    <div class="site-card" id="siteCard" hidden>
+      <div class="site-info">
+        <span class="site-label">On this site</span>
+        <span class="site-origin" id="siteOrigin"></span>
+      </div>
+      <label class="toggle toggle-small" title="Enable or disable protection for this site">
+        <input type="checkbox" id="siteToggle" aria-label="Enable or disable protection for this site">
+        <span class="slider"></span>
+      </label>
+    </div>
+
     <!-- Session info -->
     <div class="session-card">
       <div class="session-label">Active tab seed</div>
@@ -38,6 +50,12 @@
     <div class="section-title">Protections</div>
     <div class="protections" id="protectionsList">
       <!-- Populated by popup.js -->
+    </div>
+
+    <!-- Actions -->
+    <div class="actions">
+      <button class="btn-action" id="reloadBtn" type="button" hidden>Reload page</button>
+      <button class="btn-action" id="newIdentityBtn" type="button">New identity</button>
     </div>
 
     <!-- Footer -->

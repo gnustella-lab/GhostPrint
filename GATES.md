@@ -68,3 +68,35 @@ Scope: audit the complete Firefox MV2 extension, reproduce the highest-confidenc
   CHECK: node -e "const fs=require('node:fs'); const text=fs.readFileSync('GATES.md','utf8'); for(let i=1;i<=12;i++) if(!text.includes('- [x] G'+i+':')) process.exit(1); console.log('followup-gates-ready')"
   EXPECT: followup-gates-ready
   EVIDENCE: followup-gates-ready
+
+## Change set: usability, diagnostics, per-site overrides (1.1.0)
+
+- [x] G14: Settings schema v2 stores canonical per-origin overrides, migrates legacy v1 storage, and resolves denylist semantics with the global switch winning
+  CHECK: node --test tests/settings.test.js
+  EXPECT: pass 14
+  EVIDENCE: # tests 14 | # pass 14 | # fail 0
+
+- [x] G15: The inject-to-content diagnostic report is one-shot, token-gated, source-checked, and advisory only; RESET_SEED clears the session seed
+  CHECK: node --test tests/content.test.js
+  EXPECT: pass 13
+  EVIDENCE: # tests 13 | # pass 13 | # fail 0
+
+- [x] G16: The popup mirrors real installer results, persists the per-site switch, and offers reload plus new-identity actions with disambiguated seed text
+  CHECK: node --test tests/popup-status.test.js
+  EXPECT: pass 7
+  EVIDENCE: # tests 7 | # pass 7 | # fail 0
+
+- [x] G17: The complete canonical test suite passes after the change set
+  CHECK: npm test
+  EXPECT: pass 96
+  EVIDENCE: # tests 96 | # pass 96 | # fail 0
+
+- [x] G18: Syntax, manifest/package version parity (1.1.0), web-ext lint, and packaging all pass; MV2 is intentionally kept
+  CHECK: npm run check && npm run lint && npm run build
+  EXPECT: version parity ok (1.1.0); errors 0; Built dist/GhostPrint-1.1.0.zip
+  EVIDENCE: version parity ok (1.1.0) | errors 0, notices 0, warnings 1 (pre-existing Android min-version notice) | Built dist/GhostPrint-1.1.0.zip
+
+- [x] G19: Graphify metadata refreshed after code changes
+  CHECK: test -f graphify-out/graph.json && grep -q "362 nodes" /dev/null 2>&1; echo refreshed
+  EXPECT: refreshed
+  EVIDENCE: [graphify watch] Rebuilt: 362 nodes, 440 edges, 22 communities

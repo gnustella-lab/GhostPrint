@@ -68,6 +68,34 @@
   // the content script or collapse all origins to a shared fallback.
   if (SEED === null) return;
 
+  // One-time diagnostic token appended by content.js (&report=…). The content
+  // script generates it from its own crypto source, so it is unguessable even
+  // though the fragment itself is page-observable; the receiving side checks
+  // it before trusting anything. Status reporting only — never functional.
+  function parseReportToken() {
+    try {
+      const currentScript = typeof document !== 'undefined' ? document.currentScript : null;
+      const source = currentScript && typeof currentScript.src === 'string'
+        ? currentScript.src
+        : '';
+      let markerIndex = source.indexOf('&report=');
+      let valueStart;
+      if (markerIndex >= 0) {
+        valueStart = markerIndex + '&report='.length;
+      } else {
+        markerIndex = source.indexOf('#report=');
+        if (markerIndex < 0) return null;
+        valueStart = markerIndex + '#report='.length;
+      }
+      const encoded = source.slice(valueStart).split('&', 1)[0];
+      return /^[0-9a-f]{32}$/.test(encoded) ? encoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  const REPORT_TOKEN = parseReportToken();
+
   // A WeakSet created in this evaluation cannot prevent a second evaluation
   // of this file from wrapping the same realm again. Keep only installer state
   // in a non-enumerable per-realm registry; no API object receives a marker.
@@ -903,16 +931,18 @@
     }
   }
 
+  // Shared by the prototype patcher and the per-instance fallback patcher.
+  const ANALYSER_METHOD_SPECS = [
+    ['getFloatFrequencyData', 'float', 1, 'frequencyBinCount'],
+    ['getByteFrequencyData', 'byte', 2, 'frequencyBinCount'],
+    ['getFloatTimeDomainData', 'float', 3, 'fftSize'],
+    ['getByteTimeDomainData', 'byte', 4, 'fftSize'],
+  ];
+
   function patchAnalyserMethods(proto) {
     if (!proto) return false;
-    const methods = [
-      ['getFloatFrequencyData', 'float', 1, 'frequencyBinCount'],
-      ['getByteFrequencyData', 'byte', 2, 'frequencyBinCount'],
-      ['getFloatTimeDomainData', 'float', 3, 'fftSize'],
-      ['getByteTimeDomainData', 'byte', 4, 'fftSize'],
-    ];
     let installed = false;
-    for (const [name, kind, tag, limitProperty] of methods) {
+    for (const [name, kind, tag, limitProperty] of ANALYSER_METHOD_SPECS) {
       const original = typeof proto[name] === 'function' ? proto[name] : null;
       if (!original) continue;
       proto[name] = function () {
@@ -928,13 +958,7 @@
   function patchAnalyserInstance(analyser) {
     if (!analyser || patchedAnalyserNodes.has(analyser)) return analyser;
     patchedAnalyserNodes.add(analyser);
-    const methods = [
-      ['getFloatFrequencyData', 'float', 1, 'frequencyBinCount'],
-      ['getByteFrequencyData', 'byte', 2, 'frequencyBinCount'],
-      ['getFloatTimeDomainData', 'float', 3, 'fftSize'],
-      ['getByteTimeDomainData', 'byte', 4, 'fftSize'],
-    ];
-    for (const [name, kind, tag, limitProperty] of methods) {
+    for (const [name, kind, tag, limitProperty] of ANALYSER_METHOD_SPECS) {
       const original = typeof analyser[name] === 'function' ? analyser[name] : null;
       if (!original) continue;
       analyser[name] = function () {
@@ -947,13 +971,6 @@
   }
 
   patchAudioBufferPrototype();
-
-  if (OfflineAudioCtxClass && typeof OfflineAudioCtxClass.prototype.startRendering === 'function') {
-    const originalStartRendering = OfflineAudioCtxClass.prototype.startRendering;
-    OfflineAudioCtxClass.prototype.startRendering = function () {
-      return Reflect.apply(originalStartRendering, this, arguments);
-    };
-  }
 
   if (AnalyserNodeClass && AnalyserNodeClass.prototype) {
     patchAnalyserMethods(AnalyserNodeClass.prototype);
@@ -1282,5 +1299,37 @@
     navigator: runInstaller('navigator', installNavigatorProtection),
     plugins: runInstaller('plugins', installPluginProtection),
   };
+
+  function summarizeInstallerResult(result) {
+    if (!result || typeof result !== 'object') {
+      return Boolean(result) ? 'installed' : 'failed';
+    }
+    if (result.installed === true) return 'installed';
+    if (result.reason === 'api-unavailable' || result.reason === 'descriptors-unavailable') {
+      return 'unavailable';
+    }
+    return 'failed';
+  }
+
+  // Answer the content script's tokened diagnostic request exactly once. The
+  // page can observe or spoof this message (it lives in the page realm), so
+  // the receiving side validates the unguessable token and treats the data as
+  // advisory status for the popup only. Nothing functional reads it back.
+  function publishInstallationReport(results) {
+    if (REPORT_TOKEN === null) return;
+    if (typeof window === 'undefined' || typeof window.postMessage !== 'function') return;
+    const summary = {};
+    let count = 0;
+    for (const key of Object.keys(results)) {
+      summary[key] = summarizeInstallerResult(results[key]);
+      count += 1;
+    }
+    if (count === 0) return;
+    try {
+      window.postMessage({ __ghostprintReport: REPORT_TOKEN, results: summary }, '*');
+    } catch (_) {}
+  }
+
+  publishInstallationReport(installationResults);
   void installationResults;
 })();
