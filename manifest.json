@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "GhostPrint",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Randomize your browser fingerprint to protect your privacy, similar to Brave Browser's native protection.",
   "author": "GhostPrint",
   "permissions": [
