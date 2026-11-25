@@ -152,6 +152,101 @@ function updateSiteCard() {
   card.hidden = false;
 }
 
+const EXCEPTION_ERRORS = {
+  'invalid-origin': 'Enter a valid http or https address',
+  'invalid-mode': 'Unsupported exception mode',
+  'limit-reached': 'Exception limit reached (500)',
+  'not-found': 'That site is not in the list',
+};
+
+function showExceptionError(error) {
+  const el = document.getElementById('exceptionError');
+  if (!error) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  el.textContent = EXCEPTION_ERRORS[error] || 'Could not update the exceptions';
+  el.hidden = false;
+}
+
+// Renders the persisted map instead of keeping UI state: the background is
+// the single owner, so every render reads back what was actually saved.
+function renderExceptions() {
+  const list = document.getElementById('exceptionList');
+  const emptyNote = document.getElementById('exceptionEmpty');
+  const addButton = document.getElementById('exceptionAddBtn');
+  const origins = Object.keys(currentSettings.sites).sort();
+
+  list.replaceChildren();
+  for (const origin of origins) {
+    const mode = currentSettings.sites[origin];
+
+    const item = document.createElement('li');
+    item.className = 'exception-item';
+
+    const label = document.createElement('span');
+    label.className = 'exception-origin';
+    label.textContent = mode === 'on' ? origin + ' · protection on' : origin;
+    label.title = origin;
+
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn-remove';
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', 'Remove exception for ' + origin);
+    remove.addEventListener('click', async () => { await removeException(origin, remove); });
+
+    item.appendChild(label);
+    item.appendChild(remove);
+    list.appendChild(item);
+  }
+
+  emptyNote.hidden = origins.length > 0;
+  addButton.disabled = origins.length >= 500;
+}
+
+async function addException(value) {
+  const result = addSiteException(currentSettings, value);
+  if (!result.ok) {
+    showExceptionError(result.error);
+    return false;
+  }
+  const affectsActiveTab = result.origin === activeOrigin;
+  try {
+    currentSettings = await saveSettings(result.settings);
+  } catch (err) {
+    console.error('GhostPrint: could not save the site exception:', err);
+    showExceptionError(null);
+    renderError('Could not save settings');
+    return false;
+  }
+  showExceptionError(null);
+  await refreshAfterSettingsChange(affectsActiveTab);
+  return true;
+}
+
+async function removeException(origin, button) {
+  const result = removeSiteException(currentSettings, origin);
+  if (!result.ok) {
+    showExceptionError(result.error);
+    return;
+  }
+  const affectsActiveTab = result.origin === activeOrigin;
+  if (button) button.disabled = true;
+  try {
+    currentSettings = await saveSettings(result.settings);
+  } catch (err) {
+    console.error('GhostPrint: could not remove the site exception:', err);
+    showExceptionError(null);
+    renderError('Could not save settings');
+    if (button) button.disabled = false;
+    return;
+  }
+  showExceptionError(null);
+  await refreshAfterSettingsChange(affectsActiveTab);
+}
+
 function updateReloadButton(injectionStatus) {
   const button = document.getElementById('reloadBtn');
   const state = injectionStatus && typeof injectionStatus.state === 'string'
@@ -212,6 +307,7 @@ async function queryInjectionViews() {
 
 function renderInjectionViews(injectionStatus) {
   updateSiteCard();
+  renderExceptions();
   renderStatus(currentSettings.enabled, injectionStatus);
   renderFields(currentSettings.enabled, injectionStatus.surfaces);
   updateReloadButton(injectionStatus);
@@ -220,10 +316,12 @@ function renderInjectionViews(injectionStatus) {
 
 // After any persisted change the loaded page still runs the previous decision
 // until reload, so on supported pages we say exactly that instead of letting
-// a stale "installed" status speak for the new setting.
-async function refreshAfterSettingsChange() {
+// a stale "installed" status speak for the new setting. Exceptions for other
+// origins do not touch the active tab, so only a change that affects it hints
+// at a reload.
+async function refreshAfterSettingsChange(affectsActiveTab = true) {
   const injectionStatus = await queryInjectionViews();
-  if (activeOrigin !== null) needsReloadHint = true;
+  if (affectsActiveTab && activeOrigin !== null) needsReloadHint = true;
   renderInjectionViews(injectionStatus);
   if (needsReloadHint) {
     renderBanner('status-banner error', '⚠️', 'Applies after reloading the page');
@@ -234,6 +332,9 @@ function bindControls() {
   const toggle = document.getElementById('globalToggle');
   const resetButton = document.getElementById('resetBtn');
   const siteToggle = document.getElementById('siteToggle');
+  const exceptionForm = document.getElementById('exceptionForm');
+  const exceptionInput = document.getElementById('exceptionInput');
+  const exceptionAddButton = document.getElementById('exceptionAddBtn');
 
   toggle.addEventListener('change', async () => {
     const requested = toggle.checked;
@@ -256,10 +357,17 @@ function bindControls() {
     const desired = siteToggle.checked;
     siteToggle.disabled = true;
     try {
-      const sites = Object.assign({}, currentSettings.sites);
-      if (desired) delete sites[activeOrigin];
-      else sites[activeOrigin] = 'off';
-      currentSettings = await saveSettings({ enabled: currentSettings.enabled, sites });
+      const result = desired
+        ? removeSiteException(currentSettings, activeOrigin)
+        : addSiteException(currentSettings, activeOrigin, 'off');
+      // "Remove" is also how an explicit "on" entry is cleared; when there is
+      // no entry left to remove the effective decision is already correct.
+      if (!result.ok && result.error !== 'not-found') {
+        showExceptionError(result.error);
+        return;
+      }
+      if (result.ok) currentSettings = await saveSettings(result.settings);
+      showExceptionError(null);
       await refreshAfterSettingsChange();
     } catch (err) {
       console.error('GhostPrint: could not save the site exception:', err);
@@ -280,6 +388,19 @@ function bindControls() {
       renderError('Could not restore defaults');
     } finally {
       resetButton.disabled = false;
+    }
+  });
+
+  exceptionForm.addEventListener('submit', async (event) => {
+    if (event && typeof event.preventDefault === 'function') event.preventDefault();
+    const value = exceptionInput.value;
+    exceptionAddButton.disabled = true;
+    try {
+      const added = await addException(value, null);
+      if (added) exceptionInput.value = '';
+      else if (value.trim().length > 0) exceptionInput.focus();
+    } finally {
+      exceptionAddButton.disabled = Object.keys(currentSettings.sites).length >= 500;
     }
   });
 }
@@ -336,6 +457,7 @@ async function init() {
   bindControls();
   bindActions();
   renderFields(currentSettings.enabled, null);
+  renderExceptions();
   if (settingsFailed) return;
 
   try {

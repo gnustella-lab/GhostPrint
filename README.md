@@ -23,6 +23,8 @@ The code uses feature detection. The absence of one specific API should not prev
 
 Settings are `{ enabled: boolean, sites: { "<origin>": "on" | "off" } }`. The popup exposes a per-origin switch for the active tab using denylist semantics: the global switch always wins, and an explicit `off` disables one origin while protection is globally on. The content script sends its origin with the settings request and the background resolves the effective decision; when the background is unreachable the content script still fails safe to global ON. Site writes must already be canonical origins (lowercase serialized `http`/`https` origin); normalization caps the map at 500 entries.
 
+A **Site exceptions** section manages the same map directly, so an origin does not have to be opened first. Entries are typed by hand and normalized before saving: a bare host such as `example.com` defaults to `https`, while a full address must already be `http` or `https`. Inputs that are not host-shaped (`mailto:…`, `javascript:…`, `user@host`) are rejected instead of being reinterpreted as an https URL, and the entry cap is reported in the form rather than silently dropping a site. The list renders what the background persisted and offers a per-entry **Remove**, so it and the active-tab switch stay in agreement.
+
 The popup also shows which surfaces actually installed on the loaded page. After injection, `inject.js` answers a one-time tokened `postMessage` handshake started by the content script with its installer results (`installed`, `unavailable`, or `failed` per surface). The page can observe, spoof, or suppress that report — it is advisory status for the popup only, never a functional input, and the receiving side validates an unguessable token before trusting it.
 
 Two actions complete the popup: **Reload page** applies pending setting changes to the active tab, and **New identity** clears the site's session seed through a `RESET_SEED` message and reloads the tab so the next load generates a fresh one.
@@ -83,7 +85,7 @@ Brave 1.93 also deliberately bypasses its `GPUAdapterInfo` scrubbing when Chromi
 
 ### Firefox Android
 
-The manifest declares Firefox 140 as the minimum version. This configuration has not been validated on a real Android device in this project version. Treat Android support as experimental until the extension has been exercised in Firefox for Android.
+The manifest declares Firefox 142 as the minimum version. This configuration has not been validated on a real Android device in this project version. Treat Android support as experimental until the extension has been exercised in Firefox for Android.
 
 ## What the extension does not promise
 

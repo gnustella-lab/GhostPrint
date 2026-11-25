@@ -307,3 +307,138 @@ test('RESET_SETTINGS clears every per-site override', async () => {
   assert.equal(reset.ok, true);
   assert.equal(JSON.stringify(background.getStored()), JSON.stringify({ enabled: true, sites: {} }));
 });
+
+test('parseSiteInput accepts bare hosts and rejects unusable addresses', () => {
+  const context = loadSettingsContext();
+  const result = vm.runInContext(`([
+    parseSiteInput('example.com'),
+    parseSiteInput('  Example.COM/path  '),
+    parseSiteInput('example.com:8080'),
+    parseSiteInput('http://plain.test/page'),
+    parseSiteInput('https://[::1]:8443'),
+    parseSiteInput(''),
+    parseSiteInput('   '),
+    parseSiteInput('ftp://files.test'),
+    parseSiteInput('chrome://settings'),
+    parseSiteInput('two words.test'),
+    parseSiteInput(null),
+    parseSiteInput(42),
+    parseSiteInput('mailto:user@example.com'),
+    parseSiteInput('javascript:alert(1)'),
+    parseSiteInput('example.com@evil.test')
+  ])`, context);
+
+  assert.deepEqual(Array.from(result), [
+    'https://example.com',
+    'https://example.com',
+    'https://example.com:8080',
+    'http://plain.test',
+    'https://[::1]:8443',
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  ]);
+});
+
+test('addSiteException adds, updates and never mutates the input settings', () => {
+  const context = loadSettingsContext();
+  const result = vm.runInContext(`(() => {
+    const original = { enabled: true, sites: { 'https://kept.test': 'off' } };
+    const before = JSON.stringify(original);
+    const added = addSiteException(original, 'new.test');
+    const replaced = addSiteException(original, 'kept.test', 'on');
+    const defaultMode = addSiteException({ enabled: true, sites: {} }, 'implicit.test');
+    return {
+      untouched: JSON.stringify(original) === before,
+      addedOk: added.ok,
+      addedOrigin: added.origin,
+      addedSites: added.settings.sites,
+      replacedSites: replaced.settings.sites,
+      defaultModeSites: defaultMode.settings.sites,
+      badMode: addSiteException({ enabled: true, sites: {} }, 'x.test', 'maybe'),
+      badOrigin: addSiteException({ enabled: true, sites: {} }, 'ftp://x.test'),
+      preservesEnabled: addSiteException({ enabled: false, sites: {} }, 'x.test').settings.enabled
+    };
+  })()`, context);
+
+  assert.equal(result.untouched, true);
+  assert.equal(result.addedOk, true);
+  assert.equal(result.addedOrigin, 'https://new.test');
+  assert.equal(
+    JSON.stringify(result.addedSites),
+    JSON.stringify({ 'https://kept.test': 'off', 'https://new.test': 'off' }),
+  );
+  assert.equal(
+    JSON.stringify(result.replacedSites),
+    JSON.stringify({ 'https://kept.test': 'on' }),
+  );
+  assert.equal(JSON.stringify(result.defaultModeSites), JSON.stringify({ 'https://implicit.test': 'off' }));
+  assert.equal(result.badMode.ok, false);
+  assert.equal(result.badMode.error, 'invalid-mode');
+  assert.equal(result.badOrigin.ok, false);
+  assert.equal(result.badOrigin.error, 'invalid-origin');
+  assert.equal(result.preservesEnabled, false);
+});
+
+test('addSiteException refuses to grow past the entry cap but updates existing entries', () => {
+  const context = loadSettingsContext({ oversized: makeOversizedSites(500) });
+  const result = vm.runInContext(`({
+    atCap: addSiteException({ enabled: true, sites: oversized }, 'one-more.test'),
+    existing: addSiteException({ enabled: true, sites: oversized }, 'site-0.test', 'on')
+  })`, context);
+
+  assert.equal(result.atCap.ok, false);
+  assert.equal(result.atCap.error, 'limit-reached');
+  assert.equal(result.existing.ok, true);
+  assert.equal(result.existing.settings.sites['https://site-0.test'], 'on');
+  assert.equal(Object.keys(result.existing.settings.sites).length, 500);
+});
+
+test('removeSiteException drops one entry and reports missing ones', () => {
+  const context = loadSettingsContext();
+  const result = vm.runInContext(`(() => {
+    const original = { enabled: true, sites: { 'https://a.test': 'off', 'https://b.test': 'on' } };
+    const removed = removeSiteException(original, 'A.test');
+    return {
+      ok: removed.ok,
+      origin: removed.origin,
+      sites: removed.settings.sites,
+      untouched: Object.keys(original.sites).length,
+      missing: removeSiteException(original, 'https://absent.test'),
+      badOrigin: removeSiteException(original, 'not a url')
+    };
+  })()`, context);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.origin, 'https://a.test');
+  assert.equal(JSON.stringify(result.sites), JSON.stringify({ 'https://b.test': 'on' }));
+  assert.equal(result.untouched, 2);
+  assert.equal(result.missing.ok, false);
+  assert.equal(result.missing.error, 'not-found');
+  assert.equal(result.badOrigin.error, 'invalid-origin');
+});
+
+test('exceptions saved through addSiteException are accepted by SET_SETTINGS and change the decision', async () => {
+  const background = loadBackgroundContext();
+  const added = vm.runInContext(
+    'addSiteException({ enabled: true, sites: {} }, "quiet.test")',
+    loadSettingsContext(),
+  );
+  const saved = await background.send({ type: 'SET_SETTINGS', settings: added.settings });
+  const blocked = await background.send({ type: 'GET_SETTINGS', origin: 'https://quiet.test/x' });
+
+  assert.equal(saved.ok, true);
+  assert.equal(added.ok, true);
+  assert.equal(blocked.siteEnabled, false);
+  assert.equal(
+    JSON.stringify(background.getStored()),
+    JSON.stringify({ enabled: true, sites: { 'https://quiet.test': 'off' } }),
+  );
+});

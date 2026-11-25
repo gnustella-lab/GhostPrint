@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "GhostPrint",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Randomize your browser fingerprint to protect your privacy, similar to Brave Browser's native protection.",
   "author": "GhostPrint",
   "permissions": [
@@ -38,8 +38,8 @@
   "web_accessible_resources": ["inject.js"],
   "browser_specific_settings": {
     "gecko": {
-      "id": "ghostprint@ghostprint.dev",
-      "strict_min_version": "140.0",
+      "id": "ghostprint@gnustella-lab",
+      "strict_min_version": "142.0",
       "data_collection_permissions": {
         "required": ["none"]
       }

@@ -113,3 +113,61 @@ function resolveEnabledForOrigin(settings, origin) {
   if (!settings.sites || typeof settings.sites !== 'object') return true;
   return settings.sites[key] !== SITE_MODE_OFF;
 }
+
+// Canonical origin for an address typed by hand. A bare host (with optional
+// port or path) defaults to https so users do not have to type a scheme;
+// anything that already carries a scheme is normalized strictly and rejected
+// when it is not http/https. The host-shaped check keeps inputs such as
+// "mailto:user@host" from being reinterpreted as an https URL.
+function parseSiteInput(value) {
+  const direct = normalizeSiteOrigin(value);
+  if (direct !== null) return direct;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > SITE_ORIGIN_MAX_LENGTH) return null;
+  if (/\s/.test(trimmed)) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return null;
+  if (!/^[a-z0-9._-]+(:\d{1,5})?(\/.*)?$/i.test(trimmed)) return null;
+  return normalizeSiteOrigin(`https://${trimmed}`);
+}
+
+// Adds or updates one exception without mutating the input settings. Returns
+// the normalized settings so callers can persist them through SET_SETTINGS.
+// The entry cap is enforced here so the UI can explain the failure instead of
+// silently dropping an entry during normalization.
+function addSiteException(settings, value, mode) {
+  const resolvedMode = mode === undefined ? SITE_MODE_OFF : mode;
+  if (!isValidSiteMode(resolvedMode)) {
+    return { ok: false, error: 'invalid-mode' };
+  }
+  const origin = parseSiteInput(value);
+  if (origin === null) return { ok: false, error: 'invalid-origin' };
+  const current = normalizeSettings(settings);
+  const sites = Object.assign({}, current.sites);
+  const exists = Object.prototype.hasOwnProperty.call(sites, origin);
+  if (!exists && Object.keys(sites).length >= SITE_OVERRIDE_MAX_ENTRIES) {
+    return { ok: false, error: 'limit-reached' };
+  }
+  sites[origin] = resolvedMode;
+  return {
+    ok: true,
+    origin,
+    settings: { enabled: current.enabled, sites: normalizeSites(sites) },
+  };
+}
+
+function removeSiteException(settings, value) {
+  const origin = parseSiteInput(value);
+  if (origin === null) return { ok: false, error: 'invalid-origin' };
+  const current = normalizeSettings(settings);
+  if (!Object.prototype.hasOwnProperty.call(current.sites, origin)) {
+    return { ok: false, error: 'not-found' };
+  }
+  const sites = Object.assign({}, current.sites);
+  delete sites[origin];
+  return {
+    ok: true,
+    origin,
+    settings: { enabled: current.enabled, sites },
+  };
+}

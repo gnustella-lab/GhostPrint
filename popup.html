@@ -39,6 +39,19 @@
       </label>
     </div>
 
+    <!-- Site exceptions -->
+    <div class="section-title">Site exceptions</div>
+    <div class="exceptions">
+      <form class="exception-form" id="exceptionForm">
+        <input type="text" id="exceptionInput" class="exception-input" placeholder="example.com"
+               aria-label="Site address to disable protection for" autocomplete="off" spellcheck="false">
+        <button type="submit" class="btn-add" id="exceptionAddBtn">Add</button>
+      </form>
+      <p class="exception-error" id="exceptionError" role="alert" hidden></p>
+      <ul class="exception-list" id="exceptionList"></ul>
+      <p class="exception-empty" id="exceptionEmpty">No exceptions yet. Add a site to disable protection there.</p>
+    </div>
+
     <!-- Session info -->
     <div class="session-card">
       <div class="session-label">Active tab seed</div>

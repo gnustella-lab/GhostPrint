@@ -28,6 +28,7 @@ function createElement(id = null) {
     addEventListener(type, listener) {
       this.listeners[type] = listener;
     },
+    focus() {},
     appendChild(child) {
       this.children.push(child);
       return child;
@@ -60,6 +61,12 @@ async function loadPopup({
     'protectionsList',
     'reloadBtn',
     'newIdentityBtn',
+    'exceptionForm',
+    'exceptionInput',
+    'exceptionAddBtn',
+    'exceptionError',
+    'exceptionList',
+    'exceptionEmpty',
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, createElement(id)]));
   let domReady;
@@ -80,10 +87,10 @@ async function loadPopup({
     runtime: {
       sendMessage: async (message) => {
         runtimeMessages.push(message);
-        if (settingsResponse) return settingsResponse;
         if (message && message.type === 'SET_SETTINGS') {
           return { ok: true, settings: message.settings };
         }
+        if (settingsResponse) return settingsResponse;
         return { ok: true, settings: { enabled: true } };
       },
     },
@@ -222,4 +229,87 @@ test('seed line distinguishes unsupported pages from pages that need a reload', 
 
   const seeded = await loadPopup({ tabUrl: 'https://example.test/', seedValue: 305419896 });
   assert.equal(seeded.elements.sessionSeed.textContent, '0x12345678');
+});
+
+test('exceptions list renders the persisted map and hides the empty note', async () => {
+  const { elements } = await loadPopup({
+    settingsResponse: {
+      ok: true,
+      settings: { enabled: true, sites: { 'https://b.test': 'off', 'https://a.test': 'off' } },
+    },
+  });
+
+  const items = elements.exceptionList.children;
+  assert.equal(items.length, 2);
+  // Sorted for a stable order regardless of insertion order.
+  assert.equal(items[0].children[0].textContent, 'https://a.test');
+  assert.equal(items[1].children[0].textContent, 'https://b.test');
+  assert.equal(items[0].children[1].className, 'btn-remove');
+  assert.equal(elements.exceptionEmpty.hidden, true);
+  assert.equal(elements.exceptionAddBtn.disabled, false);
+});
+
+test('adding an exception from the form saves canonical settings and clears the field', async () => {
+  const { elements, runtimeMessages } = await loadPopup({ tabUrl: 'https://example.test/' });
+  assert.equal(elements.exceptionEmpty.hidden, false);
+
+  elements.exceptionInput.value = '  Bank.Example/path ';
+  await elements.exceptionForm.listeners.submit({ preventDefault() {} });
+
+  const saved = runtimeMessages.filter((message) => message.type === 'SET_SETTINGS').pop();
+  assert.equal(
+    JSON.stringify(saved.settings),
+    JSON.stringify({ enabled: true, sites: { 'https://bank.example': 'off' } }),
+  );
+  assert.equal(elements.exceptionInput.value, '');
+  assert.equal(elements.exceptionError.hidden, true);
+  assert.equal(elements.exceptionList.children.length, 1);
+  assert.equal(elements.exceptionList.children[0].children[0].textContent, 'https://bank.example');
+});
+
+test('invalid exception input surfaces an error and saves nothing', async () => {
+  const { elements, runtimeMessages } = await loadPopup({ tabUrl: 'https://example.test/' });
+
+  elements.exceptionInput.value = 'ftp://files.test';
+  await elements.exceptionForm.listeners.submit({ preventDefault() {} });
+
+  assert.equal(runtimeMessages.some((message) => message.type === 'SET_SETTINGS'), false);
+  assert.equal(elements.exceptionError.hidden, false);
+  assert.equal(elements.exceptionError.textContent, 'Enter a valid http or https address');
+  assert.equal(elements.exceptionList.children.length, 0);
+  // The offending value stays in the field so it can be corrected.
+  assert.equal(elements.exceptionInput.value, 'ftp://files.test');
+});
+
+test('an exception for another origin does not claim the active tab needs a reload', async () => {
+  const { elements } = await loadPopup({ injectionState: 'installed', tabUrl: 'https://example.test/' });
+
+  elements.exceptionInput.value = 'other.test';
+  await elements.exceptionForm.listeners.submit({ preventDefault() {} });
+  assert.equal(elements.statusText.textContent, 'Randomizing, reload pages');
+  assert.equal(elements.reloadBtn.hidden, true);
+
+  elements.exceptionInput.value = 'example.test';
+  await elements.exceptionForm.listeners.submit({ preventDefault() {} });
+  assert.equal(elements.statusText.textContent, 'Applies after reloading the page');
+  assert.equal(elements.reloadBtn.hidden, false);
+});
+
+test('removing an exception from the list persists the remaining map', async () => {
+  const { elements, runtimeMessages } = await loadPopup({
+    settingsResponse: {
+      ok: true,
+      settings: { enabled: true, sites: { 'https://a.test': 'off', 'https://b.test': 'off' } },
+    },
+  });
+
+  await elements.exceptionList.children[0].children[1].listeners.click();
+
+  const saved = runtimeMessages.filter((message) => message.type === 'SET_SETTINGS').pop();
+  assert.equal(
+    JSON.stringify(saved.settings),
+    JSON.stringify({ enabled: true, sites: { 'https://b.test': 'off' } }),
+  );
+  assert.equal(elements.exceptionList.children.length, 1);
+  assert.equal(elements.exceptionList.children[0].children[0].textContent, 'https://b.test');
 });
